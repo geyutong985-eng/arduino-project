@@ -26,8 +26,19 @@
 
 ## 目录结构
 
-- `helloworld.ino` - Hello World 示例
-- `distance_led.ino` - 超声波测距 + LED 亮度控制
+- `main.ino` - 主循环
+- `SensorIMU.h/cpp` - IMU姿态传感器读取
+- `SensorEMG.h/cpp` - EMG肌电传感器读取
+- `SensorPPG.h/cpp` - PPG脉搏传感器读取
+- `SensorFlex.h/cpp` - 弯曲传感器读取
+- `SensorPressure.h/cpp` - 压力传感器读取
+- `SensorVibrate.h/cpp` - 震动马达控制
+- `UnityComm.h/cpp` - Unity通信
+
+## 旧文件（待删除）
+
+- `helloworld.ino` - Hello World 示例（可删除）
+- `distance_led.ino` - 超声波测距示例（可删除）
 
 ## 许可证
 
