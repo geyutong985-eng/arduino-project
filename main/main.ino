@@ -3,6 +3,7 @@
 
 #include "ActuatorPneumatic.h"
 #include "SensorIMU.h"
+#include "SensorPPG.h"
 
 // ===== 引脚定义 =====
 #define PUMP_PIN 8
@@ -11,6 +12,7 @@
 // ===== 模块实例 =====
 ActuatorPneumatic pneumatic;
 SensorIMU imu;
+SensorPPG ppg;
 
 // ===== 主状态枚举 =====
 enum MainState {
@@ -31,6 +33,10 @@ void setup() {
     imu.init();
     delay(200);
 
+    Serial.println("Init PPG...");
+    ppg.init();
+    delay(200);
+
     Serial.println("Request data...");
     imu.requestEuler();
 
@@ -39,13 +45,15 @@ void setup() {
 
 // 临时测试用
 // #define TEST_MODE
-#define TEST_IMU
+// #define TEST_IMU
+#define TEST_PPG
+// #define TEST_ALL
 
 void loop() {
-#ifdef TEST_IMU
-    imu.update();
-    imu.test();
-    delay(100);
+#ifdef TEST_PPG
+    ppg.update();
+    ppg.test();
+    delay(20);  // 约 50Hz
 #endif
 
 #ifdef TEST_MODE
@@ -55,6 +63,7 @@ void loop() {
 
 #ifndef TEST_MODE
 #ifndef TEST_IMU
+#ifndef TEST_PPG
     // 正式状态机
     switch (currentState) {
         case STATE_IDLE:
@@ -82,6 +91,7 @@ void loop() {
             currentState = STATE_IDLE;
             break;
     }
+#endif
 #endif
 #endif
 }
