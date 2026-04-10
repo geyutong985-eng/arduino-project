@@ -1,6 +1,6 @@
 // IMU 姿态传感器模块（软件串口通信）
 // 协议：帧头 0x7E 0x23，小端存储
-// 软串口：D2(D2->TX, D3->RX)
+// 软串口：D2(TX) D3(RX)
 
 #ifndef SENSOR_IMU_H
 #define SENSOR_IMU_H
@@ -55,13 +55,15 @@ public:
 
     // 请求输出数据（初始化后调用）
     void requestEuler() {
-        // 重置用户数据: 7E 23 07 A0 01 5F A8 (7字节)
-        uint8_t cmdReset[] = {0x7E, 0x23, 0x07, 0xA0, 0x01, 0x5F, 0xA8};
+        // 重置用户数据: 7E 23 07 A0 01 5F E8 (7字节)
+        // 校验和 = 0x7E + 0x23 + 0x07 + 0xA0 + 0x01 + 0x5F = 0x1E8，取低8位 0xE8
+        uint8_t cmdReset[] = {0x7E, 0x23, 0x07, 0xA0, 0x01, 0x5F, 0xE8};
         imuSerial.write(cmdReset, 7);
         delay(500);
 
-        // 设置输出频率 50Hz: 7E 23 07 60 32 5F XX
-        uint8_t cmdFreq[] = {0x7E, 0x23, 0x07, 0x60, 0x32, 0x5F, 0xA4};  // 32=50Hz
+        // 设置输出频率 50Hz: 7E 23 07 60 32 5F D9 (7字节)
+        // 校验和 = 0x7E + 0x23 + 0x07 + 0x60 + 0x32 + 0x5F = 0x1D9，取低8位 0xD9
+        uint8_t cmdFreq[] = {0x7E, 0x23, 0x07, 0x60, 0x32, 0x5F, 0xD9};  // 32=50Hz
         imuSerial.write(cmdFreq, 7);
         delay(100);
     }
