@@ -35,7 +35,7 @@ const int MIN_DIFF = 50;                      // 最小校准差值（建议先 
 const float ANGLE_THRESHOLD = 90.0;           // 到位阈值
 const float HYSTERESIS = 5.0;                 // 迟滞范围
 const int BENT_MIN_RAW = 270;                  // 弯曲下限（低于此值解除到位）
-const unsigned long PRINT_INTERVAL = 100;     // 输出间隔(ms)
+const unsigned long PRINT_INTERVAL = 500;     // 输出间隔(ms)
 
 // ========= 校准数据 =========
 int flatValue = 0;
@@ -186,14 +186,14 @@ void updateFlexSensor() {
   int raw = readStableRaw(FLEX_PIN);
 
   if (!isCalibrated()) {
-    Serial.print("Flex Raw: ");
+    Serial.print("[FLEX] Raw: ");
     Serial.print(raw);
     Serial.println("  (请先校准: f伸直 b弯曲)");
     return;
   }
 
   if (!isCalibrationValid()) {
-    Serial.print("Flex Raw: ");
+    Serial.print("[FLEX] Raw: ");
     Serial.print(raw);
     Serial.println("  (校准差值不足，重新校准)");
     return;
@@ -210,7 +210,7 @@ void updateFlexSensor() {
     bentTriggered = false;
   }
 
-  Serial.print("Raw: ");
+  Serial.print("[FLEX] Raw: ");
   Serial.print(raw);
   Serial.print("  Angle: ");
   Serial.print(angle, 1);
@@ -277,8 +277,12 @@ void loop() {
 
 #ifdef TEST_PPG
         ppg.update();
-        ppg.test();
-        delay(20);  // 约 50Hz
+        static unsigned long lastPPGPrint = 0;
+        if (millis() - lastPPGPrint >= PRINT_INTERVAL) {
+            lastPPGPrint = millis();
+            ppg.test();
+        }
+        delay(20);  // 内部采样频率
 #endif
     }
 

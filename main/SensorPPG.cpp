@@ -46,7 +46,7 @@ void SensorPPG::update() {
 }
 
 void SensorPPG::test() {
-  Serial.print("PPG - Raw: ");
+  Serial.print("[PPG] Raw: ");
   Serial.print(getRawPPG());
   Serial.print("  Avg: ");
   Serial.print(getAvgPPG());
