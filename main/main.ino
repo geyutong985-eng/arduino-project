@@ -44,7 +44,7 @@ bool flatCalibrated = false;
 bool bentCalibrated = false;
 
 // ========= 状态 =========
-bool bentTriggered = false;
+bool flatTriggered = false;
 bool isCalibrating = false;  // 校准期间暂停 PPG
 float smoothRaw = -1;
 unsigned long lastPrintTime = 0;
@@ -112,7 +112,7 @@ bool isCalibrationValid() {
 }
 
 const char* getStateName(float angle) {
-  if (bentTriggered) return "伸直到位";
+  if (flatTriggered) return "伸直到位";
   if (angle >= 160.0) return "弯曲";
   return "中间";
 }
@@ -150,7 +150,7 @@ void handleFlexCommand(char cmd) {
     flatValue = calibrateAverage(FLEX_PIN, 25);
     flatCalibrated = true;
     smoothRaw = -1;
-    bentTriggered = false;
+    flatTriggered = false;
     Serial.println(">> 手臂伸直校准完成");
     Serial.print("Flat = ");
     Serial.println(flatValue);
@@ -159,7 +159,7 @@ void handleFlexCommand(char cmd) {
     bentValue = calibrateAverage(FLEX_PIN, 25);
     bentCalibrated = true;
     smoothRaw = -1;
-    bentTriggered = false;
+    flatTriggered = false;
 
     Serial.println(">> 手肘弯曲校准完成");
     Serial.print("Flat = ");
@@ -178,7 +178,7 @@ void handleFlexCommand(char cmd) {
     flatValue = bentValue = 0;
     flatCalibrated = bentCalibrated = false;
     smoothRaw = -1;
-    bentTriggered = false;
+    flatTriggered = false;
     Serial.println(">> 已重置校准");
   }
 
@@ -214,11 +214,11 @@ void updateFlexSensor() {
   float angle = getAngle(raw, flatValue, bentValue);
 
   if (raw > FLAT_MIN_RAW) {
-    bentTriggered = true;
-  } else if (!bentTriggered && angle <= (ANGLE_THRESHOLD - HYSTERESIS)) {
-    bentTriggered = true;
-  } else if (bentTriggered && angle >= (ANGLE_THRESHOLD + HYSTERESIS)) {
-    bentTriggered = false;
+    flatTriggered = true;
+  } else if (!flatTriggered && angle <= (ANGLE_THRESHOLD - HYSTERESIS)) {
+    flatTriggered = true;
+  } else if (flatTriggered && angle >= (ANGLE_THRESHOLD + HYSTERESIS)) {
+    flatTriggered = false;
   }
 
   Serial.print("[FLEX] Raw: ");
@@ -229,7 +229,7 @@ void updateFlexSensor() {
   Serial.print(norm, 3);
   Serial.print("  State: ");
   Serial.print(getStateName(angle));
-  if (bentTriggered) Serial.print("  >> 伸直到位!");
+  if (flatTriggered) Serial.print("  >> 伸直到位!");
   Serial.println();
 }
 
@@ -259,7 +259,7 @@ void setup() {
 // 临时测试用
 // #define TEST_MODE
 // #define TEST_IMU
-#define TEST_PPG
+// #define TEST_PPG
 // #define TEST_ALL
 
 // TODO: PPG 传感器问题 - 心率测量不准确（显示 160-200），isWear 检测也不准
@@ -299,32 +299,42 @@ void loop() {
 #ifndef TEST_MODE
 #ifndef TEST_IMU
 #ifndef TEST_PPG
-    // 正式状态机
-    switch (currentState) {
-        case STATE_IDLE:
-            currentState = STATE_POSE_CHECK;
-            break;
+    // ===== 根据弯曲状态控制气动 =====
+    // 弯曲时放气，伸直时充气 4 秒（只充一次，需弯曲后才重置）
 
-        case STATE_POSE_CHECK:
-            if (imu.getPitch() > 30) {
-                currentState = STATE_ACTUATOR;
-                stateStartTime = millis();
+    static unsigned long inflateStartTime = 0;
+    static bool isInflating = false;
+    static bool wasFlat = false;      // 记录上次状态
+    static bool justInflated = false; // 本次伸直已充气过，需弯曲后才重置
+
+    if (isCalibrated()) {
+        if (flatTriggered) {
+            // 伸直 → 充气 4 秒（只充一次，需弯曲后才重置）
+            if (!isInflating && !justInflated) {
+                pneumatic.startInflate();
+                inflateStartTime = millis();
+                isInflating = true;
+                wasFlat = true;
+                justInflated = true;  // 标记已充气
+                Serial.println("[气动] 伸直 → 开始充气");
             }
-            break;
-
-        case STATE_ACTUATOR:
-            if (millis() - stateStartTime < 3000) {
-                pneumatic.inflate();
-            } else {
+            // 充气 4 秒后停止
+            if (isInflating && millis() - inflateStartTime >= 4000) {
                 pneumatic.stop();
-                currentState = STATE_FEEDBACK;
+                isInflating = false;
+                Serial.println("[气动] 充气完成 (4s)");
             }
-            break;
-
-        case STATE_FEEDBACK:
-            Serial.println("DONE");
-            currentState = STATE_IDLE;
-            break;
+        } else {
+            // 弯曲 → 放气
+            if (isInflating || wasFlat) {
+                pneumatic.stop();
+                pneumatic.startDeflate();
+                isInflating = false;
+                wasFlat = false;
+                justInflated = false;  // 重置，允许下次充气
+                Serial.println("[气动] 弯曲 → 放气");
+            }
+        }
     }
 #endif
 #endif
