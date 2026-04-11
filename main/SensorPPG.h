@@ -18,7 +18,10 @@ class SensorPPG {
   ~SensorPPG() {};
 
   bool checkSampleInterval(void);  // 检查采样间隔是否到达
-  void ppgProcess(void);
+  void init();
+  void update();
+  void test();
+  void ppgProcess();
   void detectWearStatus();
   void setWearThreshold(int Threshold);
 

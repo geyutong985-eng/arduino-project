@@ -10,11 +10,12 @@
 #define PUMP_PIN 8
 #define VALVE_PIN 9
 const int FLEX_PIN = A3;   // 弯曲传感器引脚
+const int PPG_PIN = A0;     // PPG 传感器引脚
 
 // ===== 模块实例 =====
 ActuatorPneumatic pneumatic;
 SensorIMU imu;
-SensorPPG ppg;
+SensorPPG ppg(PPG_PIN, 50);
 
 // ===== 主状态枚举 =====
 enum MainState {
@@ -178,13 +179,26 @@ void handleFlexCommand(char cmd) {
 
 // ========== Flex 传感器数据更新 ==========
 void updateFlexSensor() {
-  if (!isCalibrated()) return;
-
   unsigned long now = millis();
   if (now - lastPrintTime < PRINT_INTERVAL) return;
   lastPrintTime = now;
 
   int raw = readStableRaw(FLEX_PIN);
+
+  if (!isCalibrated()) {
+    Serial.print("Flex Raw: ");
+    Serial.print(raw);
+    Serial.println("  (请先校准: f伸直 b弯曲)");
+    return;
+  }
+
+  if (!isCalibrationValid()) {
+    Serial.print("Flex Raw: ");
+    Serial.print(raw);
+    Serial.println("  (校准差值不足，重新校准)");
+    return;
+  }
+
   float norm = getNormalized(raw, flatValue, bentValue);
   float angle = getAngle(raw, flatValue, bentValue);
 
@@ -217,10 +231,16 @@ void setup() {
     Serial.println("=== Elbow Flex Sensor Sensitive Test ===");
     Serial.println("f -> 校准伸直  b -> 校准弯曲  s -> 状态  r -> 重置");
 
-    // IMU/PPG 暂未启用
-    // Serial.println("Init IMU...");
-    // imu.init();
-    // ppg.init(A0, 50);
+    Serial.println("Init IMU...");
+    imu.init();
+    delay(200);
+
+    Serial.println("Init PPG...");
+    ppg.init();
+    delay(200);
+
+    Serial.println("Request data...");
+    imu.requestEuler();
 
     Serial.println("System ready");
 }
@@ -228,20 +248,76 @@ void setup() {
 // 临时测试用
 // #define TEST_MODE
 // #define TEST_IMU
-// #define TEST_PPG
+#define TEST_PPG
 // #define TEST_ALL
 
 void loop() {
-    // Flex 传感器命令处理
-    if (Serial.available()) {
-        char cmd = Serial.read();
-        if (cmd != '\n' && cmd != '\r') {
-            handleFlexCommand(cmd);
+    // ===== 等待校准完成 =====
+    if (!isCalibrated() || !isCalibrationValid()) {
+        if (Serial.available()) {
+            char cmd = Serial.read();
+            if (cmd != '\n' && cmd != '\r') {
+                handleFlexCommand(cmd);
+            }
         }
+        delay(100);
+    } else {
+        // ===== 校准完成后才运行传感器 =====
+
+        // Flex 传感器命令处理（校准后仍可响应）
+        if (Serial.available()) {
+            char cmd = Serial.read();
+            if (cmd != '\n' && cmd != '\r') {
+                handleFlexCommand(cmd);
+            }
+        }
+
+        // Flex 传感器数据输出
+        updateFlexSensor();
+
+#ifdef TEST_PPG
+        ppg.update();
+        ppg.test();
+        delay(20);  // 约 50Hz
+#endif
     }
 
-    // Flex 传感器数据输出
-    updateFlexSensor();
+#ifdef TEST_MODE
+    pneumatic.test();
+    while (true) { }
+#endif
 
-    delay(20);
+#ifndef TEST_MODE
+#ifndef TEST_IMU
+#ifndef TEST_PPG
+    // 正式状态机
+    switch (currentState) {
+        case STATE_IDLE:
+            currentState = STATE_POSE_CHECK;
+            break;
+
+        case STATE_POSE_CHECK:
+            if (imu.getPitch() > 30) {
+                currentState = STATE_ACTUATOR;
+                stateStartTime = millis();
+            }
+            break;
+
+        case STATE_ACTUATOR:
+            if (millis() - stateStartTime < 3000) {
+                pneumatic.inflate();
+            } else {
+                pneumatic.stop();
+                currentState = STATE_FEEDBACK;
+            }
+            break;
+
+        case STATE_FEEDBACK:
+            Serial.println("DONE");
+            currentState = STATE_IDLE;
+            break;
+    }
+#endif
+#endif
+#endif
 }
