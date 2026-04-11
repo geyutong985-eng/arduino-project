@@ -45,6 +45,7 @@ bool bentCalibrated = false;
 
 // ========= 状态 =========
 bool bentTriggered = false;
+bool isCalibrating = false;  // 校准期间暂停 PPG
 float smoothRaw = -1;
 unsigned long lastPrintTime = 0;
 
@@ -140,6 +141,11 @@ void printCalibrationStatus() {
 
 // ========== Flex 传感器命令处理 ==========
 void handleFlexCommand(char cmd) {
+  // 校准时暂停 PPG，避免干扰
+  if (cmd == 'f' || cmd == 'b') {
+    isCalibrating = true;
+  }
+
   if (cmd == 'f') {
     flatValue = calibrateAverage(FLEX_PIN, 25);
     flatCalibrated = true;
@@ -174,6 +180,11 @@ void handleFlexCommand(char cmd) {
     smoothRaw = -1;
     bentTriggered = false;
     Serial.println(">> 已重置校准");
+  }
+
+  // 校准完成，恢复 PPG
+  if (cmd == 'f' || cmd == 'b' || cmd == 'r') {
+    isCalibrating = false;
   }
 }
 
@@ -251,40 +262,34 @@ void setup() {
 #define TEST_PPG
 // #define TEST_ALL
 
+// TODO: PPG 传感器问题 - 心率测量不准确（显示 160-200），isWear 检测也不准
+//       可能需要调整 SensorPPG.cpp 中的心率算法参数或阈值
+
 void loop() {
-    // ===== 等待校准完成 =====
-    if (!isCalibrated() || !isCalibrationValid()) {
-        if (Serial.available()) {
-            char cmd = Serial.read();
-            if (cmd != '\n' && cmd != '\r') {
-                handleFlexCommand(cmd);
-            }
+    // ===== 命令处理（始终响应）=====
+    if (Serial.available()) {
+        char cmd = Serial.read();
+        if (cmd != '\n' && cmd != '\r') {
+            handleFlexCommand(cmd);
         }
-        delay(100);
-    } else {
-        // ===== 校准完成后才运行传感器 =====
+    }
 
-        // Flex 传感器命令处理（校准后仍可响应）
-        if (Serial.available()) {
-            char cmd = Serial.read();
-            if (cmd != '\n' && cmd != '\r') {
-                handleFlexCommand(cmd);
-            }
-        }
-
-        // Flex 传感器数据输出
-        updateFlexSensor();
+    // ===== Flex 传感器更新（始终运行）=====
+    updateFlexSensor();
 
 #ifdef TEST_PPG
+    // ===== PPG 独立运行，不受 Flex 校准限制 =====
+    // 校准期间暂停 PPG，避免干扰 Flex 校准
+    if (!isCalibrating) {
         ppg.update();
         static unsigned long lastPPGPrint = 0;
         if (millis() - lastPPGPrint >= PRINT_INTERVAL) {
             lastPPGPrint = millis();
             ppg.test();
         }
-        delay(20);  // 内部采样频率
-#endif
     }
+    delay(20);  // 内部采样频率
+#endif
 
 #ifdef TEST_MODE
     pneumatic.test();
