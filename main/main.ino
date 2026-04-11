@@ -1,163 +1,296 @@
-/**
- * @file main.ino
- * @brief 智能硬件主程序 - 精简版（只保留已完成的模块）
- * @desc 支持分模块测试，逐步集成
- */
+// 主循环状态机
+// 统一管所有状态，根据 Unity 指令 + 传感器判定切换
 
-// 已完成的模块
 #include "ActuatorPneumatic.h"
-#include "SensorFlex.h"
-#include "SensorEMG.h"
+#include "SensorIMU.h"
 #include "SensorPPG.h"
+#include "SensorFlex.h"
 
 // ===== 引脚定义 =====
-#define PUMP_PIN     8
-#define VALVE_PIN    9
-#define FLEX_PIN    A3
-#define EMG_CH0    A0   // 通道0 - 大臂
-#define EMG_CH1    A1   // 通道1 - 小臂
-#define EMG_CH2    A2   // 通道2 - 手
-#define PPG_PIN     A0   // PPG 传感器
+#define PUMP_PIN 8
+#define VALVE_PIN 9
+const int FLEX_PIN = A3;   // 弯曲传感器引脚
 
 // ===== 模块实例 =====
 ActuatorPneumatic pneumatic;
-SensorFlex flex;
-SensorEMG emg;
+SensorIMU imu;
 SensorPPG ppg;
 
-// ===== 测试模式选择 =====
-#define TEST_FLEX
-// #define TEST_EMG
-// #define TEST_PPG
-// #define TEST_PNEUMATIC
-// #define TEST_ALL
+// ===== 主状态枚举 =====
+enum MainState {
+    STATE_IDLE,         // 空闲
+    STATE_POSE_CHECK,   // 姿态判定
+    STATE_ACTUATOR,     // 执行器控制
+    STATE_FEEDBACK      // 反馈
+};
 
-// ===== 状态变量 =====
+MainState currentState = STATE_IDLE;
+unsigned long stateStartTime = 0;
+
+// ========== SensorFlex 内容（手动内联版）==========
+// ========= 可配置参数 =========
+const int FILTER_SAMPLES = 9;                 // 滤波采样次数
+const int MIN_DIFF = 50;                      // 最小校准差值（建议先 50）
+const float ANGLE_THRESHOLD = 90.0;           // 到位阈值
+const float HYSTERESIS = 5.0;                 // 迟滞范围
+const int BENT_MIN_RAW = 270;                  // 弯曲下限（低于此值解除到位）
+const unsigned long PRINT_INTERVAL = 100;     // 输出间隔(ms)
+
+// ========= 校准数据 =========
+int flatValue = 0;
+int bentValue = 0;
+bool flatCalibrated = false;
+bool bentCalibrated = false;
+
+// ========= 状态 =========
+bool bentTriggered = false;
+float smoothRaw = -1;
 unsigned long lastPrintTime = 0;
-const unsigned long PRINT_INTERVAL = 100;
+
+// ========= 工具函数 =========
+void sortArray(int arr[], int n) {
+  for (int i = 0; i < n - 1; i++) {
+    for (int j = 0; j < n - 1 - i; j++) {
+      if (arr[j] > arr[j + 1]) {
+        int t = arr[j];
+        arr[j] = arr[j + 1];
+        arr[j + 1] = t;
+      }
+    }
+  }
+}
+
+int readMedianRaw(int pin, int samples) {
+  if (samples > 25) samples = 25;
+  int values[25];
+  for (int i = 0; i < samples; i++) {
+    values[i] = analogRead(pin);
+    delay(2);
+  }
+  sortArray(values, samples);
+  return values[samples / 2];
+}
+
+int readStableRaw(int pin) {
+  int medianRaw = readMedianRaw(pin, FILTER_SAMPLES);
+  if (smoothRaw < 0) {
+    smoothRaw = medianRaw;
+  } else {
+    smoothRaw = 0.75 * smoothRaw + 0.25 * medianRaw;
+  }
+  return (int)(smoothRaw + 0.5);
+}
+
+int calibrateAverage(int pin, int samples = 25) {
+  long sum = 0;
+  for (int i = 0; i < samples; i++) {
+    sum += analogRead(pin);
+    delay(4);
+  }
+  return sum / samples;
+}
+
+float getNormalized(int raw, int flatVal, int bentVal) {
+  if (flatVal == bentVal) return 0.0;
+  float norm = (float)(raw - flatVal) / (float)(bentVal - flatVal);
+  return constrain(norm, 0.0, 1.0);
+}
+
+float getAngle(int raw, int flatVal, int bentVal) {
+  return getNormalized(raw, flatVal, bentVal) * 180.0;
+}
+
+bool isCalibrated() {
+  return flatCalibrated && bentCalibrated;
+}
+
+bool isCalibrationValid() {
+  if (!flatCalibrated || !bentCalibrated) return false;
+  return abs(flatValue - bentValue) >= MIN_DIFF;
+}
+
+const char* getStateName(float angle) {
+  if (bentTriggered) return "到位";
+  if (angle <= 20.0) return "伸直";
+  return "中间";
+}
+
+void printCalibrationStatus() {
+  Serial.println("===== 校准状态 =====");
+  if (!flatCalibrated) {
+    Serial.println("Flat: 未校准");
+  } else {
+    Serial.print("Flat = ");
+    Serial.println(flatValue);
+  }
+  if (!bentCalibrated) {
+    Serial.println("Bent: 未校准");
+  } else {
+    Serial.print("Bent = ");
+    Serial.println(bentValue);
+  }
+  if (isCalibrated()) {
+    Serial.print("Diff = ");
+    Serial.println(abs(flatValue - bentValue));
+    Serial.print("Valid: ");
+    Serial.println(isCalibrationValid() ? "Yes" : "No");
+  }
+}
+
+// ========== Flex 传感器命令处理 ==========
+void handleFlexCommand(char cmd) {
+  if (cmd == 'f') {
+    flatValue = calibrateAverage(FLEX_PIN, 25);
+    flatCalibrated = true;
+    smoothRaw = -1;
+    bentTriggered = false;
+    Serial.println(">> 手臂伸直校准完成");
+    Serial.print("Flat = ");
+    Serial.println(flatValue);
+  }
+  else if (cmd == 'b') {
+    bentValue = calibrateAverage(FLEX_PIN, 25);
+    bentCalibrated = true;
+    smoothRaw = -1;
+    bentTriggered = false;
+
+    Serial.println(">> 手肘弯曲校准完成");
+    Serial.print("Flat = ");
+    Serial.print(flatValue);
+    Serial.print(" | Bent = ");
+    Serial.print(bentValue);
+    Serial.print(" | Diff = ");
+    Serial.print(abs(flatValue - bentValue));
+    Serial.print(" | Valid: ");
+    Serial.println(isCalibrationValid() ? "Yes" : "No");
+  }
+  else if (cmd == 's') {
+    printCalibrationStatus();
+  }
+  else if (cmd == 'r') {
+    flatValue = bentValue = 0;
+    flatCalibrated = bentCalibrated = false;
+    smoothRaw = -1;
+    bentTriggered = false;
+    Serial.println(">> 已重置校准");
+  }
+}
+
+// ========== Flex 传感器数据更新 ==========
+void updateFlexSensor() {
+  if (!isCalibrated()) return;
+
+  unsigned long now = millis();
+  if (now - lastPrintTime < PRINT_INTERVAL) return;
+  lastPrintTime = now;
+
+  int raw = readStableRaw(FLEX_PIN);
+  float norm = getNormalized(raw, flatValue, bentValue);
+  float angle = getAngle(raw, flatValue, bentValue);
+
+  if (raw < BENT_MIN_RAW) {
+    bentTriggered = false;
+  } else if (!bentTriggered && angle >= (ANGLE_THRESHOLD + HYSTERESIS)) {
+    bentTriggered = true;
+  } else if (bentTriggered && angle <= (ANGLE_THRESHOLD - HYSTERESIS)) {
+    bentTriggered = false;
+  }
+
+  Serial.print("Raw: ");
+  Serial.print(raw);
+  Serial.print("  Angle: ");
+  Serial.print(angle, 1);
+  Serial.print("  Norm: ");
+  Serial.print(norm, 3);
+  Serial.print("  State: ");
+  Serial.print(getStateName(angle));
+  if (bentTriggered) Serial.print("  >> 到位!");
+  Serial.println();
+}
 
 void setup() {
     Serial.begin(115200);
+    pinMode(FLEX_PIN, INPUT);
 
-    #ifdef TEST_FLEX
-        Serial.println("=== Test Flex ===");
-        flex.init(FLEX_PIN);
-    #endif
+    pneumatic.init(PUMP_PIN, VALVE_PIN);
 
-    #ifdef TEST_EMG
-        Serial.println("=== Test EMG ===");
-        emg.init(EMG_CH0, EMG_CH1, EMG_CH2);
-    #endif
+    Serial.println("=== Elbow Flex Sensor Sensitive Test ===");
+    Serial.println("f -> 校准伸直  b -> 校准弯曲  s -> 状态  r -> 重置");
 
-    #ifdef TEST_PPG
-        Serial.println("=== Test PPG ===");
-        ppg.init();
-    #endif
+    Serial.println("Init IMU...");
+    imu.init();
+    delay(200);
 
-    #ifdef TEST_PNEUMATIC
-        Serial.println("=== Test Pneumatic ===");
-        pneumatic.init(PUMP_PIN, VALVE_PIN);
-    #endif
+    Serial.println("Init PPG...");
+    ppg.init();
+    delay(200);
 
-    #if defined(TEST_FLEX) || defined(TEST_EMG) || defined(TEST_PPG)
-        Serial.println("f -> 校准伸直  b -> 校准弯曲  s -> 状态  r -> 重置");
-    #endif
+    Serial.println("Request data...");
+    imu.requestEuler();
 
-    Serial.println("Ready");
+    Serial.println("System ready");
 }
 
+// 临时测试用
+// #define TEST_MODE
+// #define TEST_IMU
+#define TEST_PPG
+// #define TEST_ALL
+
 void loop() {
-    unsigned long now = millis();
-
-    // ===== Flex 测试 =====
-    #ifdef TEST_FLEX
-        flex.update();
-
-        // 命令处理
-        if (Serial.available()) {
-            char cmd = Serial.read();
-            if (cmd == 'f') flex.calibrateFlat();
-            else if (cmd == 'b') flex.calibrateBent();
-            else if (cmd == 's') flex.printStatus();
-            else if (cmd == 'r') flex.reset();
+    // Flex 传感器命令处理
+    if (Serial.available()) {
+        char cmd = Serial.read();
+        if (cmd != '\n' && cmd != '\r') {
+            handleFlexCommand(cmd);
         }
+    }
 
-        // 定期输出
-        if (now - lastPrintTime > PRINT_INTERVAL) {
-            lastPrintTime = now;
-            Serial.print("Flex - Angle: ");
-            Serial.print(flex.getAngle(), 1);
-            Serial.print("  State: ");
-            switch (flex.getState()) {
-                case FLEX_FLAT: Serial.print("FLAT"); break;
-                case FLEX_MIDDLE: Serial.print("MIDDLE"); break;
-                case FLEX_BENT: Serial.print("BENT"); break;
+    // Flex 传感器数据输出
+    updateFlexSensor();
+
+#ifdef TEST_PPG
+    ppg.update();
+    ppg.test();
+    delay(20);  // 约 50Hz
+#endif
+
+#ifdef TEST_MODE
+    pneumatic.test();
+    while (true) { }
+#endif
+
+#ifndef TEST_MODE
+#ifndef TEST_IMU
+#ifndef TEST_PPG
+    // 正式状态机
+    switch (currentState) {
+        case STATE_IDLE:
+            currentState = STATE_POSE_CHECK;
+            break;
+
+        case STATE_POSE_CHECK:
+            if (imu.getPitch() > 30) {
+                currentState = STATE_ACTUATOR;
+                stateStartTime = millis();
             }
-            Serial.println();
-        }
-    #endif
+            break;
 
-    // ===== EMG 测试 =====
-    #ifdef TEST_EMG
-        emg.update();
-
-        if (Serial.available()) {
-            char cmd = Serial.read();
-            if (cmd == 's') {
-                Serial.println("=== EMG Status ===");
-                for (int i = 0; i < 3; i++) {
-                    Serial.print("CH");
-                    Serial.print(i);
-                    Serial.print(": ");
-                    Serial.println(emg.getValue(i));
-                }
-            }
-        }
-
-        if (now - lastPrintTime > PRINT_INTERVAL) {
-            lastPrintTime = now;
-            Serial.print("EMG: ");
-            Serial.print(emg.getValue(0));
-            Serial.print(" ");
-            Serial.print(emg.getValue(1));
-            Serial.print(" ");
-            Serial.println(emg.getValue(2));
-        }
-    #endif
-
-    // ===== PPG 测试 =====
-    #ifdef TEST_PPG
-        ppg.update();
-
-        if (now - lastPrintTime > PRINT_INTERVAL) {
-            lastPrintTime = now;
-            Serial.print("PPG - Raw: ");
-            Serial.print(ppg.getRaw());
-            Serial.print("  HR: ");
-            Serial.println(ppg.getHeartRate());
-        }
-    #endif
-
-    // ===== Pneumatic 测试 =====
-    #ifdef TEST_PNEUMATIC
-        pneumatic.update(500);  // 假设压力值
-
-        if (Serial.available()) {
-            char cmd = Serial.read();
-            if (cmd == 'i') {
-                Serial.println("Inflate");
-                pneumatic.startInflate();
-            }
-            else if (cmd == 'd') {
-                Serial.println("Deflate");
-                pneumatic.startDeflate();
-            }
-            else if (cmd == 's') {
-                Serial.println("Stop");
+        case STATE_ACTUATOR:
+            if (millis() - stateStartTime < 3000) {
+                pneumatic.inflate();
+            } else {
                 pneumatic.stop();
+                currentState = STATE_FEEDBACK;
             }
-        }
-    #endif
+            break;
 
-    delay(20);
+        case STATE_FEEDBACK:
+            Serial.println("DONE");
+            currentState = STATE_IDLE;
+            break;
+    }
+#endif
+#endif
+#endif
 }
