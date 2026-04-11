@@ -32,9 +32,9 @@ unsigned long stateStartTime = 0;
 // ========= 可配置参数 =========
 const int FILTER_SAMPLES = 9;                 // 滤波采样次数
 const int MIN_DIFF = 50;                      // 最小校准差值（建议先 50）
-const float ANGLE_THRESHOLD = 90.0;           // 到位阈值
+const float ANGLE_THRESHOLD = 20.0;           // 到位阈值（伸直=小角度）
 const float HYSTERESIS = 5.0;                 // 迟滞范围
-const int BENT_MIN_RAW = 270;                  // 弯曲下限（低于此值解除到位）
+const int FLAT_MIN_RAW = 700;                  // 伸直下限（高于此值触发到位）
 const unsigned long PRINT_INTERVAL = 500;     // 输出间隔(ms)
 
 // ========= 校准数据 =========
@@ -112,8 +112,8 @@ bool isCalibrationValid() {
 }
 
 const char* getStateName(float angle) {
-  if (bentTriggered) return "到位";
-  if (angle <= 20.0) return "伸直";
+  if (bentTriggered) return "伸直到位";
+  if (angle >= 160.0) return "弯曲";
   return "中间";
 }
 
@@ -213,11 +213,11 @@ void updateFlexSensor() {
   float norm = getNormalized(raw, flatValue, bentValue);
   float angle = getAngle(raw, flatValue, bentValue);
 
-  if (raw < BENT_MIN_RAW) {
-    bentTriggered = false;
-  } else if (!bentTriggered && angle >= (ANGLE_THRESHOLD + HYSTERESIS)) {
+  if (raw > FLAT_MIN_RAW) {
     bentTriggered = true;
-  } else if (bentTriggered && angle <= (ANGLE_THRESHOLD - HYSTERESIS)) {
+  } else if (!bentTriggered && angle <= (ANGLE_THRESHOLD - HYSTERESIS)) {
+    bentTriggered = true;
+  } else if (bentTriggered && angle >= (ANGLE_THRESHOLD + HYSTERESIS)) {
     bentTriggered = false;
   }
 
@@ -229,7 +229,7 @@ void updateFlexSensor() {
   Serial.print(norm, 3);
   Serial.print("  State: ");
   Serial.print(getStateName(angle));
-  if (bentTriggered) Serial.print("  >> 到位!");
+  if (bentTriggered) Serial.print("  >> 伸直到位!");
   Serial.println();
 }
 
