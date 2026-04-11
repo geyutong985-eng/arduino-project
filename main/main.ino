@@ -217,16 +217,10 @@ void setup() {
     Serial.println("=== Elbow Flex Sensor Sensitive Test ===");
     Serial.println("f -> 校准伸直  b -> 校准弯曲  s -> 状态  r -> 重置");
 
-    Serial.println("Init IMU...");
-    imu.init();
-    delay(200);
-
-    Serial.println("Init PPG...");
-    ppg.init();
-    delay(200);
-
-    Serial.println("Request data...");
-    imu.requestEuler();
+    // IMU/PPG 暂未启用
+    // Serial.println("Init IMU...");
+    // imu.init();
+    // ppg.init(A0, 50);
 
     Serial.println("System ready");
 }
@@ -234,7 +228,7 @@ void setup() {
 // 临时测试用
 // #define TEST_MODE
 // #define TEST_IMU
-#define TEST_PPG
+// #define TEST_PPG
 // #define TEST_ALL
 
 void loop() {
@@ -249,48 +243,5 @@ void loop() {
     // Flex 传感器数据输出
     updateFlexSensor();
 
-#ifdef TEST_PPG
-    ppg.update();
-    ppg.test();
-    delay(20);  // 约 50Hz
-#endif
-
-#ifdef TEST_MODE
-    pneumatic.test();
-    while (true) { }
-#endif
-
-#ifndef TEST_MODE
-#ifndef TEST_IMU
-#ifndef TEST_PPG
-    // 正式状态机
-    switch (currentState) {
-        case STATE_IDLE:
-            currentState = STATE_POSE_CHECK;
-            break;
-
-        case STATE_POSE_CHECK:
-            if (imu.getPitch() > 30) {
-                currentState = STATE_ACTUATOR;
-                stateStartTime = millis();
-            }
-            break;
-
-        case STATE_ACTUATOR:
-            if (millis() - stateStartTime < 3000) {
-                pneumatic.inflate();
-            } else {
-                pneumatic.stop();
-                currentState = STATE_FEEDBACK;
-            }
-            break;
-
-        case STATE_FEEDBACK:
-            Serial.println("DONE");
-            currentState = STATE_IDLE;
-            break;
-    }
-#endif
-#endif
-#endif
+    delay(20);
 }
