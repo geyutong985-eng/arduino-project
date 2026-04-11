@@ -38,6 +38,8 @@ public:
     bool isCalibrationValid() const;
     void printStatus() const;
     void test() const;
+    const char* getStateName() const;
+    int getState() const;
 
 private:
     int flexPin;
