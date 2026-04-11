@@ -7,7 +7,7 @@ const float BP_B2 = 0.00122714f;
 const float BP_A1 = -1.8794700f;
 const float BP_A2 = 0.89155200f;
 
-SensorPPG::CheezPPG(int inputPin, int sampleRate)
+SensorPPG::SensorPPG(int inputPin, int sampleRate)
     : _inputPin(inputPin), _sampleRate(sampleRate) {
   _moving_window_size = _sampleRate / 50;  // 设置移动平均窗口大小
   _smallest = _sampleRate * 60 / _hr_max;  // 计算最小可能的心跳间隔
@@ -19,7 +19,7 @@ SensorPPG::CheezPPG(int inputPin, int sampleRate)
   for (i = 11; i >= 1; i--) _HRV_buffer[(unsigned char)(i - 1)] = 0;
 }
 
-SensorPPG::CheezPPG(int inputPin, int sampleRate, unsigned char hr_min,
+SensorPPG::SensorPPG(int inputPin, int sampleRate, unsigned char hr_min,
                    unsigned char hr_max)
     : _inputPin(inputPin),
       _sampleRate(sampleRate),
@@ -35,11 +35,34 @@ SensorPPG::CheezPPG(int inputPin, int sampleRate, unsigned char hr_min,
   for (i = 11; i >= 1; i--) _HRV_buffer[(unsigned char)(i - 1)] = 0;
 }
 
+void SensorPPG::init() {
+  Serial.println("PPG Init done");
+}
+
+void SensorPPG::update() {
+  if (checkSampleInterval()) {
+    ppgProcess();
+  }
+}
+
+void SensorPPG::test() {
+  Serial.print("PPG - Raw: ");
+  Serial.print(getRawPPG());
+  Serial.print("  Avg: ");
+  Serial.print(getAvgPPG());
+  Serial.print("  Filtered: ");
+  Serial.print(getFilterPPG());
+  Serial.print("  HR: ");
+  Serial.print(getPpgHr());
+  Serial.print("  isWear: ");
+  Serial.println(getPpgisWear() ? "Yes" : "No");
+}
+
 /**
  * @brief 定时器
- * 
- * @return true 
- * @return false 
+ *
+ * @return true
+ * @return false
  */
 bool SensorPPG::checkSampleInterval(void) {
   static unsigned long past_time;
@@ -304,7 +327,7 @@ unsigned long SensorPPG::findMax(unsigned long *X) {
   unsigned long max_val = X[(PEAK_WINDOW_HALF_SIZE - 2)];
   for (unsigned char i = (PEAK_WINDOW_HALF_SIZE - 1);
        i <= (PEAK_WINDOW_HALF_SIZE + 2); i++) {
-    if (max_val < X[i]) max_val = X[i];  
+    if (max_val < X[i]) max_val = X[i];
   }
   return max_val;
 }
@@ -319,7 +342,7 @@ unsigned long SensorPPG::findMin(unsigned long *X) {
   unsigned long min_val = X[(PEAK_WINDOW_HALF_SIZE - 2)];
   for (unsigned char i = (PEAK_WINDOW_HALF_SIZE + 2);
        i >= (PEAK_WINDOW_HALF_SIZE - 1); i--) {
-    if (min_val > X[i]) min_val = X[i];  
+    if (min_val > X[i]) min_val = X[i];
   }
   return min_val;
 }
@@ -332,18 +355,18 @@ unsigned long SensorPPG::findMin(unsigned long *X) {
  */
 float SensorPPG::AverageFilter(float input) {
   float avgPPG = 0.0f;
- 
+
   if (_avgCount < AVG_WINDOW_SIZE) {
     _avgSum += input;
     _avgBuffer[_avgIndex] = input;
     ++_avgCount;
-  } else { 
+  } else {
     _avgSum = _avgSum - _avgBuffer[_avgIndex] + input;
     _avgBuffer[_avgIndex] = input;
   }
- 
+
   _avgIndex = (_avgIndex + 1) % AVG_WINDOW_SIZE;
- 
+
   if (_avgCount == AVG_WINDOW_SIZE) {
     avgPPG = _avgSum / AVG_WINDOW_SIZE;
   }
