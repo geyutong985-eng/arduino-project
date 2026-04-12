@@ -2,6 +2,7 @@
 // 命令层 → 传感器层 → 联动层 → 硬件层
 
 #include "ActuatorPneumatic.h"
+#include "ActuatorVibration.h"
 #include "SensorIMU.h"
 // #include "SensorPPG.h"  // 禁用以节省内存
 #include "SensorFlex.h"
@@ -10,12 +11,14 @@
 // ===== 引脚定义 =====
 #define PUMP_PIN 8
 #define VALVE_PIN 9
+#define MOTOR_PIN 6
 const int FLEX_PIN = A3;
 // const int PPG_PIN = A0;
 const int PRESSURE_PIN = A4;
 
 // ===== 模块实例 =====
 ActuatorPneumatic pneumatic;
+ActuatorVibration vibration;
 SensorIMU imu;
 // SensorPPG ppg(PPG_PIN, 50);  // 禁用
 SensorFlex flex(FLEX_PIN);
@@ -189,12 +192,32 @@ void controlPneumatic() {
 }
 
 // ============================================================
+// 联动层：controlVibration()
+// 触发条件：Flex弯曲 + 压力传感器未按下 → 震动2秒
+// ============================================================
+void controlVibration() {
+    if (!flex.isCalibrated()) return;
+    if (!flex.isCalibrationValid()) return;
+
+    FlexState state = flex.getState();
+    bool isBent = (state == FLEX_BENT);
+    bool pressurePressed = pressure.isPressed();
+
+    if (isBent && !pressurePressed) {
+        vibration.start();
+    } else {
+        vibration.stop();
+    }
+}
+
+// ============================================================
 // 主程序
 // ============================================================
 void setup() {
     Serial.begin(115200);
 
     pneumatic.init(PUMP_PIN, VALVE_PIN);
+    vibration.init(MOTOR_PIN);
     flex.init();
     imu.init();
     // ppg.init();
@@ -214,4 +237,6 @@ void loop() {
     // updatePPG();          // 传感器层 (已禁用)
     pressure.update();      // 传感器层
     controlPneumatic();     // 联动层
+    controlVibration();     // 联动层
+    vibration.update();     // 震动计时控制
 }
