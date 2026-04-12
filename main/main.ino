@@ -259,7 +259,7 @@ void setup() {
 // 临时测试用
 // #define TEST_MODE
 // #define TEST_IMU
-// #define TEST_PPG
+#define TEST_PPG
 // #define TEST_ALL
 
 // TODO: PPG 传感器问题 - 心率测量不准确（显示 160-200），isWear 检测也不准
@@ -296,9 +296,7 @@ void loop() {
     while (true) { }
 #endif
 
-#ifndef TEST_MODE
-#ifndef TEST_IMU
-#ifndef TEST_PPG
+#if defined(TEST_PPG) || !defined(TEST_MODE)
     // ===== 根据弯曲状态控制气动 =====
     // 弯曲时放气，伸直时充气 4 秒（只充一次，需弯曲后才重置）
 
@@ -336,7 +334,5 @@ void loop() {
             }
         }
     }
-#endif
-#endif
 #endif
 }
