@@ -18,7 +18,10 @@ class SensorPPG {
   ~SensorPPG() {};
 
   bool checkSampleInterval(void);  // 检查采样间隔是否到达
-  void ppgProcess(void);
+  void init();
+  void update();
+  void test();
+  void ppgProcess();
   void detectWearStatus();
   void setWearThreshold(int Threshold);
 
@@ -44,9 +47,9 @@ class SensorPPG {
   uint32_t _inputPin;
   uint32_t _sampleRate = 0;
 
-  static const int PEAK_WINDOW_SIZE = 21;  // 峰值检测窗口大小(奇数)
+  static const int PEAK_WINDOW_SIZE = 11;  // 峰值检测窗口大小(奇数)
   static const int PEAK_WINDOW_HALF_SIZE = (PEAK_WINDOW_SIZE - 1) / 2;
-  static const int _WINDOW_SIZE = 12;  // 心率/HRV值的数组大小
+  static const int _WINDOW_SIZE = 6;  // 心率/HRV值的数组大小
 
   unsigned long _peak_window_HP[PEAK_WINDOW_SIZE];  // 峰值检测窗口
   unsigned char _HR_buffer[_WINDOW_SIZE];           // 心率值
@@ -73,7 +76,7 @@ class SensorPPG {
   unsigned char _hrv_max = 200;  // 最大HRV(SDNN)
   unsigned char _hrv_min = 0;    // 最小HRV(SDNN)
 
-  static const int AVG_WINDOW_SIZE = 21;  // PPG 平滑滤波窗口大小
+  static const int AVG_WINDOW_SIZE = 11;  // PPG 平滑滤波窗口大小
   float _avgBuffer[AVG_WINDOW_SIZE] = {0.0f};
   int _avgIndex = 0;
   int _avgCount = 0;
