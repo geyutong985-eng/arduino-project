@@ -1,163 +1,218 @@
-/**
- * @file main.ino
- * @brief 智能硬件主程序 - 精简版（只保留已完成的模块）
- * @desc 支持分模块测试，逐步集成
- */
+// 主循环 - 分层架构
+// 命令层 → 传感器层 → 联动层 → 硬件层
 
-// 已完成的模块
 #include "ActuatorPneumatic.h"
-#include "SensorFlex.h"
-#include "SensorEMG.h"
+#include "SensorIMU.h"
 #include "SensorPPG.h"
+#include "SensorFlex.h"
+#include "SensorPressure.h"
 
 // ===== 引脚定义 =====
-#define PUMP_PIN     8
-#define VALVE_PIN    9
-#define FLEX_PIN    A3
-#define EMG_CH0    A0   // 通道0 - 大臂
-#define EMG_CH1    A1   // 通道1 - 小臂
-#define EMG_CH2    A2   // 通道2 - 手
-#define PPG_PIN     A0   // PPG 传感器
+#define PUMP_PIN 8
+#define VALVE_PIN 9
+const int FLEX_PIN = A3;
+const int PPG_PIN = A0;
+const int PRESSURE_PIN = A4;
 
 // ===== 模块实例 =====
 ActuatorPneumatic pneumatic;
-SensorFlex flex;
-SensorEMG emg;
-SensorPPG ppg;
+SensorIMU imu;
+SensorPPG ppg(PPG_PIN, 50);
+SensorFlex flex(FLEX_PIN);
+SensorPressure pressure(PRESSURE_PIN);
 
-// ===== 测试模式选择 =====
-#define TEST_FLEX
-// #define TEST_EMG
-// #define TEST_PPG
-// #define TEST_PNEUMATIC
-// #define TEST_ALL
+// ===== 联动配置 =====
+bool enableFlexPneumatic = true;  // 弯曲→气动联动
 
-// ===== 状态变量 =====
-unsigned long lastPrintTime = 0;
-const unsigned long PRINT_INTERVAL = 100;
+// ============================================================
+// 命令层：handleCommand()
+// ============================================================
+void handleCommand() {
+    if (!Serial.available()) return;
 
+    char cmd = Serial.read();
+    if (cmd == '\n' || cmd == '\r') return;
+
+    // 校准命令
+    switch (cmd) {
+        case 'f':
+            flex.calibrateFlat();
+            Serial.println(">> 伸直校准完成");
+            break;
+        case 'b':
+            flex.calibrateBent();
+            Serial.print(">> 弯曲校准完成, Diff=");
+            Serial.println(abs(flex.getRaw() - 0));  // TODO: 获取校准值
+            break;
+        case 's':
+            flex.printStatus();
+            break;
+        case 'r':
+            flex.reset();
+            Serial.println(">> 已重置校准");
+            break;
+        case 't':
+            Serial.println("[测试] 气动充气 3秒...");
+            pneumatic.startInflate();
+            delay(3000);
+            pneumatic.stop();
+            Serial.println("[测试] 完成");
+            break;
+        case 'p':
+            Serial.println("[测试] PPG 输出...");
+            ppg.update();
+            ppg.test();
+            break;
+        case 'i':
+            Serial.println("[测试] IMU...");
+            imu.update();
+            Serial.print("Pitch: ");
+            Serial.println(imu.getPitch());
+            break;
+        case 'v':
+            Serial.println("[测试] 压力传感器...");
+            pressure.test();
+            break;
+        case 'e':
+            enableFlexPneumatic = true;
+            Serial.println("[配置] 弯曲→气动: 已启用");
+            break;
+        case 'd':
+            enableFlexPneumatic = false;
+            Serial.println("[配置] 弯曲→气动: 已禁用");
+            break;
+        case 'h':
+            Serial.println("===== 命令帮助 =====");
+            Serial.println("f -> 校准伸直");
+            Serial.println("b -> 校准弯曲");
+            Serial.println("s -> 状态");
+            Serial.println("r -> 重置");
+            Serial.println("t -> 测试气动");
+            Serial.println("p -> 测试PPG");
+            Serial.println("i -> 测试IMU");
+            Serial.println("e -> 启用弯曲→气动");
+            Serial.println("d -> 禁用弯曲→气动");
+            Serial.println("v -> 测试压力传感器");
+            Serial.println("h -> 帮助");
+            break;
+    }
+}
+
+// ============================================================
+// 传感器层
+// ============================================================
+unsigned long lastPPGPrintTime = 0;
+unsigned long lastIMUPrintTime = 0;
+const unsigned long PRINT_INTERVAL = 500;
+
+void updateFlex() {
+    if (!flex.isCalibrated()) {
+        static unsigned long lastReminder = 0;
+        if (millis() - lastReminder >= 3000) {
+            lastReminder = millis();
+            Serial.println(">> 请校准弯曲传感器: f (伸直) + b (弯曲)");
+        }
+        return;
+    }
+    flex.update();
+}
+
+void updatePPG() {
+    ppg.update();
+
+    unsigned long now = millis();
+    if (now - lastPPGPrintTime >= PRINT_INTERVAL) {
+        lastPPGPrintTime = now;
+        ppg.test();
+    }
+}
+
+void updateIMU() {
+    imu.update();
+
+    unsigned long now = millis();
+    if (now - lastIMUPrintTime >= PRINT_INTERVAL) {
+        lastIMUPrintTime = now;
+        imu.test();
+        imu.printArmState();
+    }
+}
+
+// ============================================================
+// 联动层：controlPneumatic()
+// ============================================================
+static unsigned long inflateStartTime = 0;
+static bool isInflating = false;
+static bool wasFlat = false;
+static bool justInflated = false;
+
+void controlPneumatic() {
+    if (!enableFlexPneumatic) return;
+    if (!flex.isCalibrated()) return;
+
+    // 使用 SensorFlex 的状态判断
+    // bentTriggered 在 SensorFlex 里实际是"弯曲触发"
+    // 但我们的逻辑是伸直触发，需要转换
+    //
+    // SensorFlex 状态：FLEX_FLAT(伸直), FLEX_MIDDLE, FLEX_BENT(弯曲)
+    // 我们需要：伸直 → 充气，弯曲 → 放气
+
+    FlexState state = flex.getState();
+    bool isFlat = (state == FLEX_FLAT);  // 伸直状态
+
+    if (isFlat) {
+        // 伸直 → 充气 4 秒（只充一次，需弯曲后才重置）
+        if (!isInflating && !justInflated) {
+            pneumatic.startInflate();
+            inflateStartTime = millis();
+            isInflating = true;
+            wasFlat = true;
+            justInflated = true;
+            Serial.println("[气动] 伸直 → 开始充气");
+        }
+        // 充气 4 秒后停止
+        if (isInflating && millis() - inflateStartTime >= 4000) {
+            pneumatic.stop();
+            isInflating = false;
+            Serial.println("[气动] 充气完成 (4s)");
+        }
+    } else {
+        // 弯曲 → 放气
+        if (isInflating || wasFlat) {
+            pneumatic.stop();
+            pneumatic.startDeflate();
+            isInflating = false;
+            wasFlat = false;
+            justInflated = false;
+            Serial.println("[气动] 弯曲 → 放气");
+        }
+    }
+}
+
+// ============================================================
+// 主程序
+// ============================================================
 void setup() {
     Serial.begin(115200);
 
-    #ifdef TEST_FLEX
-        Serial.println("=== Test Flex ===");
-        flex.init(FLEX_PIN);
-    #endif
+    pneumatic.init(PUMP_PIN, VALVE_PIN);
+    flex.init();
+    imu.init();
+    ppg.init();
+    pressure.init();
+    pressure.setThreshold(150);
+    imu.requestEuler();
 
-    #ifdef TEST_EMG
-        Serial.println("=== Test EMG ===");
-        emg.init(EMG_CH0, EMG_CH1, EMG_CH2);
-    #endif
-
-    #ifdef TEST_PPG
-        Serial.println("=== Test PPG ===");
-        ppg.init();
-    #endif
-
-    #ifdef TEST_PNEUMATIC
-        Serial.println("=== Test Pneumatic ===");
-        pneumatic.init(PUMP_PIN, VALVE_PIN);
-    #endif
-
-    #if defined(TEST_FLEX) || defined(TEST_EMG) || defined(TEST_PPG)
-        Serial.println("f -> 校准伸直  b -> 校准弯曲  s -> 状态  r -> 重置");
-    #endif
-
-    Serial.println("Ready");
+    Serial.println("=== 系统就绪 ===");
+    Serial.println("h -> 查看命令帮助");
 }
 
 void loop() {
-    unsigned long now = millis();
-
-    // ===== Flex 测试 =====
-    #ifdef TEST_FLEX
-        flex.update();
-
-        // 命令处理
-        if (Serial.available()) {
-            char cmd = Serial.read();
-            if (cmd == 'f') flex.calibrateFlat();
-            else if (cmd == 'b') flex.calibrateBent();
-            else if (cmd == 's') flex.printStatus();
-            else if (cmd == 'r') flex.reset();
-        }
-
-        // 定期输出
-        if (now - lastPrintTime > PRINT_INTERVAL) {
-            lastPrintTime = now;
-            Serial.print("Flex - Angle: ");
-            Serial.print(flex.getAngle(), 1);
-            Serial.print("  State: ");
-            switch (flex.getState()) {
-                case FLEX_FLAT: Serial.print("FLAT"); break;
-                case FLEX_MIDDLE: Serial.print("MIDDLE"); break;
-                case FLEX_BENT: Serial.print("BENT"); break;
-            }
-            Serial.println();
-        }
-    #endif
-
-    // ===== EMG 测试 =====
-    #ifdef TEST_EMG
-        emg.update();
-
-        if (Serial.available()) {
-            char cmd = Serial.read();
-            if (cmd == 's') {
-                Serial.println("=== EMG Status ===");
-                for (int i = 0; i < 3; i++) {
-                    Serial.print("CH");
-                    Serial.print(i);
-                    Serial.print(": ");
-                    Serial.println(emg.getValue(i));
-                }
-            }
-        }
-
-        if (now - lastPrintTime > PRINT_INTERVAL) {
-            lastPrintTime = now;
-            Serial.print("EMG: ");
-            Serial.print(emg.getValue(0));
-            Serial.print(" ");
-            Serial.print(emg.getValue(1));
-            Serial.print(" ");
-            Serial.println(emg.getValue(2));
-        }
-    #endif
-
-    // ===== PPG 测试 =====
-    #ifdef TEST_PPG
-        ppg.update();
-
-        if (now - lastPrintTime > PRINT_INTERVAL) {
-            lastPrintTime = now;
-            Serial.print("PPG - Raw: ");
-            Serial.print(ppg.getRaw());
-            Serial.print("  HR: ");
-            Serial.println(ppg.getHeartRate());
-        }
-    #endif
-
-    // ===== Pneumatic 测试 =====
-    #ifdef TEST_PNEUMATIC
-        pneumatic.update(500);  // 假设压力值
-
-        if (Serial.available()) {
-            char cmd = Serial.read();
-            if (cmd == 'i') {
-                Serial.println("Inflate");
-                pneumatic.startInflate();
-            }
-            else if (cmd == 'd') {
-                Serial.println("Deflate");
-                pneumatic.startDeflate();
-            }
-            else if (cmd == 's') {
-                Serial.println("Stop");
-                pneumatic.stop();
-            }
-        }
-    #endif
-
-    delay(20);
+    handleCommand();       // 命令层
+    updateIMU();            // IMU更新+打印
+    imu.detectPickAction(); // 手势识别
+    updateFlex();           // 传感器层
+    updatePPG();            // 传感器层
+    pressure.update();      // 传感器层
+    controlPneumatic();     // 联动层
 }
