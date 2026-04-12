@@ -6,9 +6,10 @@
 // ========== 可配置参数 ==========
 const int FLEX_FILTER_SAMPLES = 9;          // 滤波采样次数
 const int FLEX_MIN_DIFF = 50;               // 最小校准差值
-const float FLEX_ANGLE_THRESHOLD = 45.0;     // 弯曲阈值
-const float FLEX_HYSTERESIS = 2.0;          // 迟滞范围
-const unsigned long FLEX_PRINT_INTERVAL = 100; // 输出间隔(ms)
+const float FLEX_ANGLE_THRESHOLD = 20.0;     // 到位阈值（伸直=小角度）
+const float FLEX_HYSTERESIS = 5.0;          // 迟滞范围
+const int FLEX_FLAT_MIN_RAW = 700;           // 伸直下限（高于此值触发）
+const unsigned long FLEX_PRINT_INTERVAL = 500; // 输出间隔(ms)
 
 // ========== 状态枚举 ==========
 enum FlexState {
