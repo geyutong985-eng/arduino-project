@@ -62,15 +62,13 @@ void SensorFlex::update() {
         bentTriggered = false;
     }
 
-    Serial.print("Raw: ");
+    Serial.print("[FLEX] Raw: ");
     Serial.print(raw);
     Serial.print("  Angle: ");
     Serial.print(angle, 1);
-    Serial.print("  Norm: ");
-    Serial.print(norm, 3);
     Serial.print("  State: ");
     Serial.print(getStateName());
-    if (bentTriggered) Serial.print("  >> 弯曲!");
+    if (bentTriggered) Serial.print(" >>BENT");
     Serial.println();
 }
 
