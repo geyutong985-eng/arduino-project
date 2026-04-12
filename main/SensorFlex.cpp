@@ -88,11 +88,9 @@ float SensorFlex::getNormalized() const {
 
 FlexState SensorFlex::getState() const {
     if (!isCalibrated()) return FLEX_FLAT;
+    // 直接用 update() 更新的 bentTriggered，不重新读角度
     if (bentTriggered) return FLEX_BENT;
-    int raw = const_cast<SensorFlex*>(this)->readStableRaw();
-    float angle = getAngle(raw, flatValue, bentValue);
-    if (angle <= 5.0) return FLEX_FLAT;
-    return FLEX_MIDDLE;
+    return FLEX_FLAT;  // 没触发弯曲就是伸直（或中间，但气动逻辑只需要区分弯曲/非弯曲）
 }
 
 bool SensorFlex::isCalibrated() const {
@@ -144,10 +142,7 @@ void SensorFlex::test() const {
 
 const char* SensorFlex::getStateName() const {
     if (bentTriggered) return "弯曲";
-    int raw = const_cast<SensorFlex*>(this)->readStableRaw();
-    float angle = getAngle(raw, flatValue, bentValue);
-    if (angle <= 5.0) return "伸直";
-    return "中间";
+    return "伸直";
 }
 
 // ========== 私有方法 ==========
