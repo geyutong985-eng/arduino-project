@@ -6,26 +6,25 @@ SensorFlex::SensorFlex(int pin) : flexPin(pin), flatValue(0), bentValue(0),
 
 void SensorFlex::init() {
     pinMode(flexPin, INPUT);
-    Serial.println("=== Elbow Flex Sensor Sensitive Test ===");
-    Serial.println("f -> 校准伸直  b -> 校准弯曲  s -> 状态  r -> 重置");
+    Serial.println("=== Elbow Flex Sensor ===");
 }
 
 void SensorFlex::calibrateFlat() {
-    flatValue = calibrateAverage(FLEX_FILTER_SAMPLES * 3);
+    flatValue = calibrateAverage(25);
     flatCalibrated = true;
     smoothRaw = -1;
     bentTriggered = false;
-    Serial.println(">> 手臂伸直校准完成");
+    Serial.println(">> 伸直校准完成");
     Serial.print("Flat = ");
     Serial.println(flatValue);
 }
 
 void SensorFlex::calibrateBent() {
-    bentValue = calibrateAverage(FLEX_FILTER_SAMPLES * 3);
+    bentValue = calibrateAverage(25);
     bentCalibrated = true;
     smoothRaw = -1;
     bentTriggered = false;
-    Serial.println(">> 手肘弯曲校准完成");
+    Serial.println(">> 弯曲校准完成");
     Serial.print("Flat = ");
     Serial.print(flatValue);
     Serial.print(" | Bent = ");
@@ -56,9 +55,12 @@ void SensorFlex::update() {
     float norm = getNormalized(raw, flatValue, bentValue);
     float angle = getAngle(raw, flatValue, bentValue);
 
-    if (!bentTriggered && angle >= (FLEX_ANGLE_THRESHOLD + FLEX_HYSTERESIS)) {
+    // 伸直到位判断（之前是弯曲到位）
+    if (raw > FLEX_FLAT_MIN_RAW) {
+        bentTriggered = true;  // 复用变量，实际表示"伸直到位"
+    } else if (!bentTriggered && angle <= (FLEX_ANGLE_THRESHOLD - FLEX_HYSTERESIS)) {
         bentTriggered = true;
-    } else if (bentTriggered && angle <= (FLEX_ANGLE_THRESHOLD - FLEX_HYSTERESIS)) {
+    } else if (bentTriggered && angle >= (FLEX_ANGLE_THRESHOLD + FLEX_HYSTERESIS)) {
         bentTriggered = false;
     }
 
@@ -87,10 +89,15 @@ float SensorFlex::getNormalized() const {
 }
 
 FlexState SensorFlex::getState() const {
-    if (!isCalibrated()) return FLEX_FLAT;
-    // 直接用 update() 更新的 bentTriggered，不重新读角度
-    if (bentTriggered) return FLEX_BENT;
-    return FLEX_FLAT;  // 没触发弯曲就是伸直（或中间，但气动逻辑只需要区分弯曲/非弯曲）
+    if (!isCalibrated()) return FLEX_MIDDLE;
+
+    // bentTriggered 在这里是"伸直到位"
+    if (bentTriggered) return FLEX_FLAT;
+
+    int raw = const_cast<SensorFlex*>(this)->readStableRaw();
+    float angle = getAngle(raw, flatValue, bentValue);
+    if (angle >= 160.0) return FLEX_BENT;
+    return FLEX_MIDDLE;
 }
 
 bool SensorFlex::isCalibrated() const {
@@ -141,8 +148,11 @@ void SensorFlex::test() const {
 }
 
 const char* SensorFlex::getStateName() const {
-    if (bentTriggered) return "弯曲";
-    return "伸直";
+    if (bentTriggered) return "伸直到位";
+    int raw = const_cast<SensorFlex*>(this)->readStableRaw();
+    float angle = getAngle(raw, flatValue, bentValue);
+    if (angle >= 160.0) return "弯曲";
+    return "中间";
 }
 
 // ========== 私有方法 ==========
