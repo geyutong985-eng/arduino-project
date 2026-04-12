@@ -7,7 +7,7 @@ const float BP_B2 = 0.00122714f;
 const float BP_A1 = -1.8794700f;
 const float BP_A2 = 0.89155200f;
 
-SensorPPG::CheezPPG(int inputPin, int sampleRate)
+SensorPPG::SensorPPG(int inputPin, int sampleRate)
     : _inputPin(inputPin), _sampleRate(sampleRate) {
   _moving_window_size = _sampleRate / 50;  // 设置移动平均窗口大小
   _smallest = _sampleRate * 60 / _hr_max;  // 计算最小可能的心跳间隔
@@ -19,7 +19,7 @@ SensorPPG::CheezPPG(int inputPin, int sampleRate)
   for (i = 11; i >= 1; i--) _HRV_buffer[(unsigned char)(i - 1)] = 0;
 }
 
-SensorPPG::CheezPPG(int inputPin, int sampleRate, unsigned char hr_min,
+SensorPPG::SensorPPG(int inputPin, int sampleRate, unsigned char hr_min,
                    unsigned char hr_max)
     : _inputPin(inputPin),
       _sampleRate(sampleRate),

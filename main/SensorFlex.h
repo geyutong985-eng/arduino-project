@@ -3,9 +3,6 @@
 
 #include <Arduino.h>
 
-// ========== 默认引脚 ==========
-#define FLEX_PIN A3
-
 // ========== 可配置参数 ==========
 const int FLEX_FILTER_SAMPLES = 9;          // 滤波采样次数
 const int FLEX_MIN_DIFF = 50;               // 最小校准差值
@@ -34,6 +31,7 @@ public:
     float getAngle() const;
     float getNormalized() const;
     FlexState getState() const;
+    const char* getStateName() const;
     bool isCalibrated() const;
     bool isCalibrationValid() const;
     void printStatus() const;
