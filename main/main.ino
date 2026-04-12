@@ -5,18 +5,21 @@
 #include "SensorIMU.h"
 #include "SensorPPG.h"
 #include "SensorFlex.h"
+#include "SensorPressure.h"
 
 // ===== 引脚定义 =====
 #define PUMP_PIN 8
 #define VALVE_PIN 9
 const int FLEX_PIN = A3;
 const int PPG_PIN = A0;
+const int PRESSURE_PIN = A4;
 
 // ===== 模块实例 =====
 ActuatorPneumatic pneumatic;
 SensorIMU imu;
 SensorPPG ppg(PPG_PIN, 50);
 SensorFlex flex(FLEX_PIN);
+SensorPressure pressure(PRESSURE_PIN);
 
 // ===== 联动配置 =====
 bool enableFlexPneumatic = true;  // 弯曲→气动联动
@@ -66,6 +69,10 @@ void handleCommand() {
             Serial.print("Pitch: ");
             Serial.println(imu.getPitch());
             break;
+        case 'v':
+            Serial.println("[测试] 压力传感器...");
+            pressure.test();
+            break;
         case 'e':
             enableFlexPneumatic = true;
             Serial.println("[配置] 弯曲→气动: 已启用");
@@ -85,6 +92,7 @@ void handleCommand() {
             Serial.println("i -> 测试IMU");
             Serial.println("e -> 启用弯曲→气动");
             Serial.println("d -> 禁用弯曲→气动");
+            Serial.println("v -> 测试压力传感器");
             Serial.println("h -> 帮助");
             break;
     }
@@ -116,8 +124,6 @@ void updatePPG() {
         lastPPGPrintTime = now;
         ppg.test();
     }
-
-    delay(20);
 }
 
 // ============================================================
@@ -181,6 +187,8 @@ void setup() {
     flex.init();
     imu.init();
     ppg.init();
+    pressure.init();
+    pressure.setThreshold(150);
     imu.requestEuler();
 
     Serial.println("=== 系统就绪 ===");
@@ -191,5 +199,6 @@ void loop() {
     handleCommand();      // 命令层
     updateFlex();         // 传感器层
     updatePPG();          // 传感器层
-    controlPneumatic();   // 联动层
+    pressure.update();    // 传感器层
+    controlPneumatic();  // 联动层
 }
