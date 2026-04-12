@@ -2,6 +2,7 @@
 // 命令层 → 传感器层 → 联动层 → 硬件层
 
 #include "ActuatorPneumatic.h"
+#include "ActuatorVibrator.h"
 #include "SensorIMU.h"
 // #include "SensorPPG.h"  // 禁用以节省内存
 #include "SensorFlex.h"
@@ -10,12 +11,14 @@
 // ===== 引脚定义 =====
 #define PUMP_PIN 8
 #define VALVE_PIN 9
+#define MOTOR_PIN 6
 const int FLEX_PIN = A3;
 // const int PPG_PIN = A0;
 const int PRESSURE_PIN = A4;
 
 // ===== 模块实例 =====
 ActuatorPneumatic pneumatic;
+ActuatorVibrator vibrator(MOTOR_PIN);
 SensorIMU imu;
 // SensorPPG ppg(PPG_PIN, 50);  // 禁用
 SensorFlex flex(FLEX_PIN);
@@ -73,6 +76,9 @@ void handleCommand() {
             Serial.println("[测试] 压力传感器...");
             pressure.test();
             break;
+        case 'w':
+            vibrator.test();
+            break;
         case 'e':
             enableFlexPneumatic = true;
             Serial.println("[配置] 弯曲→气动: 已启用");
@@ -93,6 +99,7 @@ void handleCommand() {
             Serial.println("e -> 启用弯曲→气动");
             Serial.println("d -> 禁用弯曲→气动");
             Serial.println("v -> 测试压力传感器");
+            Serial.println("w -> 测试震动马达");
             Serial.println("h -> 帮助");
             break;
     }
@@ -195,6 +202,7 @@ void setup() {
     Serial.begin(115200);
 
     pneumatic.init(PUMP_PIN, VALVE_PIN);
+    vibrator.init();
     flex.init();
     imu.init();
     // ppg.init();
@@ -214,4 +222,5 @@ void loop() {
     // updatePPG();          // 传感器层 (已禁用)
     pressure.update();      // 传感器层
     controlPneumatic();     // 联动层
+    vibrator.update(flex.getState(), pressure.isPressed(), flex.isCalibrated()); // 震动控制
 }

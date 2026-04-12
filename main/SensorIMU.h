@@ -52,7 +52,7 @@ private:
     float roll, pitch, yaw;  // 姿态角(度)
 
     // Madgwick 滤波器
-    Madgwick filter;
+    // Madgwick filter;  // 注释掉以节省内存
 
     // 手势识别状态
     ArmState currentArmState;
@@ -75,7 +75,7 @@ public:
         frameIndex = 0;
         payloadLength = 0;
 
-        filter.begin(50);  // 50Hz
+        // filter.begin(50);  // 50Hz  // 注释掉以节省内存
 
         currentArmState = ARM_STATE_UNKNOWN;
         lastArmState = ARM_STATE_UNKNOWN;
@@ -297,11 +297,11 @@ private:
             gy = ((int16_t)(frameBuffer[9] << 8 | frameBuffer[8])) * gyroRatio;
             gz = ((int16_t)(frameBuffer[11] << 8 | frameBuffer[10])) * gyroRatio;
 
-            // Madgwick 滤波
-            filter.update(gx, gy, gz, ax, ay, az, 0.0f, 0.0f, 0.0f);
-            roll  = filter.getRoll();
-            pitch = filter.getPitch();
-            yaw   = filter.getYaw();
+            // 直接使用原始数据（不用Madgwick滤波节省内存）
+            // filter.update(gx, gy, gz, ax, ay, az, 0.0f, 0.0f, 0.0f);
+            // roll  = filter.getRoll();
+            // pitch = filter.getPitch();
+            // yaw   = filter.getYaw();
         }
         else if (frameFunction == IMU_FUNC_EULER) {
             if (payloadLength < 12) return;
