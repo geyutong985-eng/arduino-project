@@ -97,6 +97,14 @@ unsigned long lastPPGPrintTime = 0;
 const unsigned long PRINT_INTERVAL = 500;
 
 void updateFlex() {
+    if (!flex.isCalibrated()) {
+        static unsigned long lastReminder = 0;
+        if (millis() - lastReminder >= 3000) {
+            lastReminder = millis();
+            Serial.println(">> 请校准弯曲传感器: f (伸直) + b (弯曲)");
+        }
+        return;
+    }
     flex.update();
 }
 
