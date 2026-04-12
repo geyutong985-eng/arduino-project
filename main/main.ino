@@ -2,27 +2,31 @@
 // 命令层 → 传感器层 → 联动层 → 硬件层
 
 #include "ActuatorPneumatic.h"
+#include "ActuatorVibration.h"
 #include "SensorIMU.h"
-#include "SensorPPG.h"
+// #include "SensorPPG.h"  // 禁用以节省内存
 #include "SensorFlex.h"
 #include "SensorPressure.h"
 
 // ===== 引脚定义 =====
 #define PUMP_PIN 8
 #define VALVE_PIN 9
+#define MOTOR_PIN 6
 const int FLEX_PIN = A3;
-const int PPG_PIN = A0;
+// const int PPG_PIN = A0;
 const int PRESSURE_PIN = A4;
 
 // ===== 模块实例 =====
 ActuatorPneumatic pneumatic;
+ActuatorVibration vibration;
 SensorIMU imu;
-SensorPPG ppg(PPG_PIN, 50);
+// SensorPPG ppg(PPG_PIN, 50);  // 禁用
 SensorFlex flex(FLEX_PIN);
 SensorPressure pressure(PRESSURE_PIN);
 
 // ===== 联动配置 =====
 bool enableFlexPneumatic = true;  // 弯曲→气动联动
+bool enableVibration = true;     // 震动触发
 
 // ============================================================
 // 命令层：handleCommand()
@@ -58,11 +62,11 @@ void handleCommand() {
             pneumatic.stop();
             Serial.println("[测试] 完成");
             break;
-        case 'p':
-            Serial.println("[测试] PPG 输出...");
-            ppg.update();
-            ppg.test();
-            break;
+        // case 'p':
+            // Serial.println("[测试] PPG 输出...");
+            // ppg.update();
+            // ppg.test();
+            // break;
         case 'i':
             Serial.println("[测试] IMU...");
             imu.update();
@@ -72,6 +76,10 @@ void handleCommand() {
         case 'v':
             Serial.println("[测试] 压力传感器...");
             pressure.test();
+            break;
+        case 'w':
+            Serial.println("[测试] 震动马达...");
+            vibration.start();
             break;
         case 'e':
             enableFlexPneumatic = true;
@@ -93,6 +101,7 @@ void handleCommand() {
             Serial.println("e -> 启用弯曲→气动");
             Serial.println("d -> 禁用弯曲→气动");
             Serial.println("v -> 测试压力传感器");
+            Serial.println("w -> 测试震动马达");
             Serial.println("h -> 帮助");
             break;
     }
@@ -101,7 +110,7 @@ void handleCommand() {
 // ============================================================
 // 传感器层
 // ============================================================
-unsigned long lastPPGPrintTime = 0;
+unsigned long lastIMUPrintTime = 0;
 const unsigned long PRINT_INTERVAL = 500;
 
 void updateFlex() {
@@ -116,13 +125,24 @@ void updateFlex() {
     flex.update();
 }
 
-void updatePPG() {
-    ppg.update();
+// void updatePPG() {
+//     ppg.update();
+
+    // unsigned long now = millis();
+    // if (now - lastPPGPrintTime >= PRINT_INTERVAL) {
+    //     lastPPGPrintTime = now;
+    //     ppg.test();
+    // }
+// }
+
+void updateIMU() {
+    imu.update();
 
     unsigned long now = millis();
-    if (now - lastPPGPrintTime >= PRINT_INTERVAL) {
-        lastPPGPrintTime = now;
-        ppg.test();
+    if (now - lastIMUPrintTime >= PRINT_INTERVAL) {
+        lastIMUPrintTime = now;
+        imu.test();
+        imu.printArmState();
     }
 }
 
@@ -137,13 +157,6 @@ static bool justInflated = false;
 void controlPneumatic() {
     if (!enableFlexPneumatic) return;
     if (!flex.isCalibrated()) return;
-
-    // 使用 SensorFlex 的状态判断
-    // bentTriggered 在 SensorFlex 里实际是"弯曲触发"
-    // 但我们的逻辑是伸直触发，需要转换
-    //
-    // SensorFlex 状态：FLEX_FLAT(伸直), FLEX_MIDDLE, FLEX_BENT(弯曲)
-    // 我们需要：伸直 → 充气，弯曲 → 放气
 
     FlexState state = flex.getState();
     bool isFlat = (state == FLEX_FLAT);  // 伸直状态
@@ -178,15 +191,36 @@ void controlPneumatic() {
 }
 
 // ============================================================
+// 联动层：controlVibration()
+// 触发条件：Flex伸直 + 压力传感器未按下 + 已校准 → 震动2秒
+// ============================================================
+void controlVibration() {
+    if (!enableVibration) return;
+    if (!flex.isCalibrated()) return;
+    if (!flex.isCalibrationValid()) return;
+    if (vibration.isActive()) return;  // 已在震动中
+
+    FlexState state = flex.getState();
+    bool isFlat = (state == FLEX_FLAT);
+    bool pressurePressed = pressure.isPressed();
+
+    // 触发条件：伸直 + 压力未按下
+    if (isFlat && !pressurePressed) {
+        vibration.start();
+    }
+}
+
+// ============================================================
 // 主程序
 // ============================================================
 void setup() {
     Serial.begin(115200);
 
     pneumatic.init(PUMP_PIN, VALVE_PIN);
+    vibration.init(MOTOR_PIN);
     flex.init();
     imu.init();
-    ppg.init();
+    // ppg.init();
     pressure.init();
     pressure.setThreshold(150);
     imu.requestEuler();
@@ -196,9 +230,13 @@ void setup() {
 }
 
 void loop() {
-    handleCommand();      // 命令层
-    updateFlex();         // 传感器层
-    updatePPG();          // 传感器层
-    pressure.update();    // 传感器层
-    controlPneumatic();  // 联动层
+    handleCommand();       // 命令层
+    updateIMU();            // IMU更新+打印
+    imu.detectPickAction(); // 手势识别
+    updateFlex();           // 传感器层
+    // updatePPG();          // 传感器层 (已禁用)
+    pressure.update();      // 传感器层
+    controlPneumatic();     // 联动层
+    controlVibration();     // 联动层：震动控制
+    vibration.update();     // 震动计时控制
 }
