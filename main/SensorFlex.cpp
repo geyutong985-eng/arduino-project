@@ -68,7 +68,6 @@ void SensorFlex::update() {
     Serial.print(angle, 1);
     Serial.print("  State: ");
     Serial.print(getStateName());
-    if (bentTriggered) Serial.print(" >>BENT");
     Serial.println();
 }
 
