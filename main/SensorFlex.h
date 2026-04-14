@@ -9,8 +9,14 @@ const int FLEX_MIN_DIFF = 50;               // 最小校准差值
 const float FLEX_ANGLE_THRESHOLD = 45.0;     // 弯曲阈值
 const float FLEX_HYSTERESIS = 2.0;          // 迟滞范围
 const unsigned long FLEX_PRINT_INTERVAL = 500; // 输出间隔(ms)
+const int FLEX_RANGE_MARGIN = 50;           // 状态判定范围边界
 
-// ========== 状态枚举 ==========
+// ========== 详细状态枚举（两种状态）==========
+enum FlexDetailedState {
+    FLEX_DETAILED_FLAT,   // 伸直
+    FLEX_DETAILED_BENT   // 弯曲（包含中间）
+};
+
 enum FlexState {
     FLEX_FLAT,    // 伸直
     FLEX_MIDDLE,  // 中间
@@ -32,6 +38,7 @@ public:
     float getNormalized() const;
     FlexState getState() const;
     const char* getStateName() const;
+    FlexDetailedState getDetailedState() const;
     bool isCalibrated() const;
     bool isCalibrationValid() const;
     void printStatus() const;

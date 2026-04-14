@@ -123,6 +123,14 @@ void updateFlex() {
         return;
     }
     flex.update();
+
+    // 调试：显示详细状态
+    static unsigned long lastDebug = 0;
+    if (millis() - lastDebug >= 2000) {
+        lastDebug = millis();
+        int raw = flex.getRaw();
+        // 注意：这里无法直接访问 private 成员，需要添加 getter
+    }
 }
 
 // void updatePPG() {
@@ -148,65 +156,148 @@ void updateIMU() {
 
 // ============================================================
 // 联动层：controlPneumatic()
+// 充气条件（4种任一满足 → 充气5秒）：
+//   1. 弯曲中间 + IMU半抬
+//   2. 弯曲中间 + IMU举起
+//   3. 弯曲伸直 + IMU半抬
+//   4. 弯曲伸直 + IMU举起
+// 放气条件：弯曲传感器弯曲 → 立即放气
 // ============================================================
 static unsigned long inflateStartTime = 0;
 static bool isInflating = false;
-static bool wasFlat = false;
-static bool justInflated = false;
+static bool inflateTriggered = false;  // 充气已触发过
 
 void controlPneumatic() {
     if (!enableFlexPneumatic) return;
     if (!flex.isCalibrated()) return;
 
-    FlexState state = flex.getState();
-    bool isFlat = (state == FLEX_FLAT);  // 伸直状态
+    FlexDetailedState fState = flex.getDetailedState();
+    ArmState imuState = imu.getArmState();
 
-    if (isFlat) {
-        // 伸直 → 充气 4 秒（只充一次，需弯曲后才重置）
-        if (!isInflating && !justInflated) {
-            pneumatic.startInflate();
-            inflateStartTime = millis();
-            isInflating = true;
-            wasFlat = true;
-            justInflated = true;
-            Serial.println("[气动] 伸直 → 开始充气");
-        }
-        // 充气 4 秒后停止
-        if (isInflating && millis() - inflateStartTime >= 4000) {
-            pneumatic.stop();
-            isInflating = false;
-            Serial.println("[气动] 充气完成 (4s)");
-        }
-    } else {
-        // 弯曲 → 放气
-        if (isInflating || wasFlat) {
-            pneumatic.stop();
-            pneumatic.startDeflate();
-            isInflating = false;
-            wasFlat = false;
-            justInflated = false;
-            Serial.println("[气动] 弯曲 → 放气");
-        }
+    // 判断是否应该充气（两种条件：伸直+半抬 或 伸直+举起）
+    bool shouldInflate = false;
+
+    if (fState == FLEX_DETAILED_FLAT && imuState == ARM_STATE_HALF_RAISED) {
+        shouldInflate = true;
+    } else if (fState == FLEX_DETAILED_FLAT && imuState == ARM_STATE_PICKING) {
+        shouldInflate = true;
+    }
+
+    // 判断是否应该放气（弯曲即放）
+    bool shouldDeflate = (fState == FLEX_DETAILED_BENT);
+
+    // 充气逻辑
+    if (shouldInflate && !isInflating && !inflateTriggered) {
+        pneumatic.startInflate();
+        inflateStartTime = millis();
+        isInflating = true;
+        inflateTriggered = true;
+    }
+
+    // 充气5秒后停止
+    if (isInflating && millis() - inflateStartTime >= 5000) {
+        pneumatic.stop();
+        isInflating = false;
+    }
+
+    // 放气逻辑（弯曲即放）
+    if (shouldDeflate && (isInflating || inflateTriggered)) {
+        pneumatic.stop();
+        pneumatic.startDeflate();
+        isInflating = false;
+        inflateTriggered = false;
+    }
+}
+
+// 检查是否可以重新触发充气（状态回到初始时）
+void resetPneumaticIfNeeded() {
+    FlexDetailedState fState = flex.getDetailedState();
+    ArmState imuState = imu.getArmState();
+
+    // 当状态回到初始（弯曲+半抬）时，可以重新触发充气
+    if (fState == FLEX_DETAILED_BENT && imuState == ARM_STATE_HALF_RAISED) {
+        inflateTriggered = false;
     }
 }
 
 // ============================================================
 // 联动层：controlVibration()
-// 触发条件：Flex伸直 + 压力传感器未按下 + 已校准 → 震动2秒
+// 触发条件（三选一，延迟2秒）：
+//   1. 弯曲传感器伸直 + IMU未到举起
+//   2. IMU举起 + 弯曲传感器未伸直
+//   3. 两者都到位 + 压力传感器未按下
+// 震动模式：震动500ms → 停5秒 → 再震动 → 重复
+// 压力传感器按下：停止本次震动；松开后重新监测
 // ============================================================
+static unsigned long vibrationDelayStart = 0;
+static bool vibrationDelayTriggered = false;
+static bool lastPressureState = false;  // 上次压力传感器状态
+static unsigned long vibrationRepeatStart = 0;
+static bool vibrationPatternActive = false;
+
 void controlVibration() {
     if (!enableVibration) return;
     if (!flex.isCalibrated()) return;
     if (!flex.isCalibrationValid()) return;
-    if (vibration.isActive()) return;  // 已在震动中
 
-    FlexState state = flex.getState();
-    bool isFlat = (state == FLEX_FLAT);
+    FlexDetailedState fState = flex.getDetailedState();
+    ArmState imuState = imu.getArmState();
     bool pressurePressed = pressure.isPressed();
 
-    // 触发条件：伸直 + 压力未按下
-    if (isFlat && !pressurePressed) {
-        vibration.start();
+    // 压力传感器按下：立即停止震动
+    if (pressurePressed) {
+        if (vibration.isActive()) {
+            vibration.stop();
+        }
+        vibrationDelayTriggered = false;
+        vibrationPatternActive = false;
+        lastPressureState = true;
+        return;
+    }
+
+    // 检测压力传感器从按下到松开的转变
+    if (lastPressureState && !pressurePressed) {
+        vibrationDelayTriggered = false;
+    }
+    lastPressureState = pressurePressed;
+
+    // 判断是否应该触发震动
+    bool shouldVibrate = false;
+
+    // 情况1: 弯曲传感器伸直 + IMU半抬（排除自然下垂）
+    if (fState == FLEX_DETAILED_FLAT && imuState == ARM_STATE_HALF_RAISED) {
+        shouldVibrate = true;
+    }
+    // 情况2: IMU举起 + 弯曲传感器未伸直
+    else if (imuState == ARM_STATE_PICKING && fState != FLEX_DETAILED_FLAT) {
+        shouldVibrate = true;
+    }
+    // 情况3: 两者都到位 + 压力传感器未按下
+    else if (fState == FLEX_DETAILED_FLAT && imuState == ARM_STATE_PICKING && !pressurePressed) {
+        shouldVibrate = true;
+    }
+
+    if (!shouldVibrate) {
+        vibrationDelayTriggered = false;
+        vibrationPatternActive = false;
+        return;
+    }
+
+    // 触发震动
+    if (!vibrationDelayTriggered) {
+        vibrationDelayStart = millis();
+        vibrationDelayTriggered = true;
+        vibrationPatternActive = false;
+    }
+
+    // 2秒延时后开始震动模式
+    if (millis() - vibrationDelayStart >= 2000) {
+        if (!vibrationPatternActive) {
+            vibrationPatternActive = true;
+            vibrationRepeatStart = millis();
+            vibration.setDuration(500);
+            vibration.start();
+        }
     }
 }
 

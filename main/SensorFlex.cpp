@@ -155,6 +155,19 @@ const char* SensorFlex::getStateName() const {
     return "中间";
 }
 
+FlexDetailedState SensorFlex::getDetailedState() const {
+    if (!isCalibrated()) return FLEX_DETAILED_BENT;
+
+    int raw = readStableRaw();
+
+    // 两种状态：raw < flatValue 为伸直，其余为弯曲
+    if (raw < flatValue) {
+        return FLEX_DETAILED_FLAT;
+    }
+
+    return FLEX_DETAILED_BENT;
+}
+
 // ========== 私有方法 ==========
 
 void SensorFlex::sortArray(int arr[], int n) {
