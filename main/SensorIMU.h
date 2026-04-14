@@ -1,339 +1,201 @@
-// ===== IMU 姿态传感器模块（Madgwick滤波）=====
-// 协议：帧头 0x7E 0x23，小端存储
-// 软串口：D2(TX) D3(RX)
-// 手势识别：自然下垂→半抬→摘果子
-
-#ifndef SENSOR_IMU_H
-#define SENSOR_IMU_H
+#ifndef SENSORIMU_H
+#define SENSORIMU_H
 
 #include <Arduino.h>
-#include <SoftwareSerial.h>
-#include <MadgwickAHRS.h>
-
-// ===== 协议帧头和功能码 =====
-#define FRAME_HEAD1 0x7E
-#define FRAME_HEAD2 0x23
-#define IMU_FUNC_RAW_ACCEL 0x04  // 原始数据
-#define IMU_FUNC_QUAT      0x16  // 四元数
-#define IMU_FUNC_EULER     0x26  // 欧拉角
-
-// ===== 解析状态 =====
-enum {
-    RX_STATE_EXPECT_HEAD1 = 0,
-    RX_STATE_EXPECT_HEAD2,
-    RX_STATE_EXPECT_LENGTH,
-    RX_STATE_EXPECT_FUNCTION,
-    RX_STATE_COLLECT_DATA
-};
+#include <Wire.h>
 
 // ===== 手势识别状态 =====
-enum ArmState {
-    ARM_STATE_UNKNOWN = 0,
-    ARM_STATE_NATURAL_DOWN,  // 自然下垂
-    ARM_STATE_HALF_RAISED,   // 半抬
-    ARM_STATE_PICKING        // 摘果子
+enum Posture {
+    POSTURE_UNKNOWN = 0,
+    POSTURE_NATURAL_DOWN,  // 自然下垂
+    POSTURE_HALF_RAISED,   // 半抬
+    POSTURE_PICKING        // 摘果子/举起
 };
+
+// 兼容旧接口
+typedef Posture ArmState;
+#define ARM_STATE_UNKNOWN       POSTURE_UNKNOWN
+#define ARM_STATE_NATURAL_DOWN  POSTURE_NATURAL_DOWN
+#define ARM_STATE_HALF_RAISED   POSTURE_HALF_RAISED
+#define ARM_STATE_PICKING       POSTURE_PICKING
 
 class SensorIMU {
 private:
-    SoftwareSerial imuSerial;   // RX=D3, TX=D2
+    uint8_t imuAddr;
 
-    // 解析状态机
-    uint8_t rxState;
-    uint8_t frameLength;
-    uint8_t frameFunction;
-    uint8_t frameBuffer[64];
-    uint16_t frameIndex;
-    uint16_t payloadLength;
-
-    // 解析后的数据
-    float ax, ay, az;   // 加速度(g)
-    float gx, gy, gz;   // 角速度(rad/s)
-    float roll, pitch, yaw;  // 姿态角(度)
-
-    // Madgwick 滤波器
-    // Madgwick filter;  // 注释掉以节省内存
+    // 原始数据
+    int16_t accXRaw, accYRaw, accZRaw;
+    int16_t gyroXRaw, gyroYRaw, gyroZRaw;
+    int16_t tempRaw;
 
     // 手势识别状态
-    ArmState currentArmState;
-    ArmState lastArmState;
-    bool passedNatural;
-    bool passedHalf;
-    bool pickTriggered;
-    unsigned long stateHoldStart;
-    unsigned long pickSignalStart;
+    Posture currentPosture;
+    int stableCountThreshold;
+    int naturalCount;
+    int halfCount;
+    int pickCount;
+
+    // I2C 通信
+    void writeRegister(uint8_t reg, uint8_t data) {
+        Wire.beginTransmission(imuAddr);
+        Wire.write(reg);
+        Wire.write(data);
+        Wire.endTransmission();
+    }
+
+    bool readRegisters(uint8_t startReg, uint8_t count, uint8_t *dest) {
+        Wire.beginTransmission(imuAddr);
+        Wire.write(startReg);
+        if (Wire.endTransmission(false) != 0) {
+            return false;
+        }
+        uint8_t received = Wire.requestFrom(imuAddr, count);
+        if (received != count) {
+            return false;
+        }
+        for (uint8_t i = 0; i < count; i++) {
+            dest[i] = Wire.read();
+        }
+        return true;
+    }
+
+    // ===== 姿态判断函数 =====
+    bool isNatural(float ax, float ay, float az) {
+        return (ax < -0.20 && ay < 0.45 && abs(az) < 0.30);
+    }
+
+    bool isHalfRaised(float ax, float ay, float az) {
+        return (ax > 0.20 && ax < 0.75 && ay > 0.60 && az > 0.05);
+    }
+
+    bool isPickPose(float ax, float ay, float az) {
+        return (ax > 0.78 && ay > 0.15 && ay < 0.60 && abs(az) < 0.20);
+    }
+
+    // 更新姿态状态（自由切换）
+    void updatePostureState(float ax, float ay, float az) {
+        bool natural = isNatural(ax, ay, az);
+        bool half = isHalfRaised(ax, ay, az);
+        bool pick = isPickPose(ax, ay, az);
+
+        if (natural) naturalCount++;
+        else naturalCount = 0;
+
+        if (half) halfCount++;
+        else halfCount = 0;
+
+        if (pick) pickCount++;
+        else pickCount = 0;
+
+        // 自由切换：检测到哪个状态且满足稳定次数就切换
+        if (natural && naturalCount >= stableCountThreshold && currentPosture != POSTURE_NATURAL_DOWN) {
+            currentPosture = POSTURE_NATURAL_DOWN;
+            Serial.println("Posture: NATURAL DOWN");
+            naturalCount = 0;
+        } else if (half && halfCount >= stableCountThreshold && currentPosture != POSTURE_HALF_RAISED) {
+            currentPosture = POSTURE_HALF_RAISED;
+            Serial.println("Posture: HALF RAISED");
+            halfCount = 0;
+        } else if (pick && pickCount >= stableCountThreshold && currentPosture != POSTURE_PICKING) {
+            currentPosture = POSTURE_PICKING;
+            Serial.println("Posture: PICKING");
+            pickCount = 0;
+        }
+    }
 
 public:
-    SensorIMU() : imuSerial(3, 2) {
-        roll = pitch = yaw = 0.0f;
-        ax = ay = az = 0.0f;
-        gx = gy = gz = 0.0f;
-
-        rxState = RX_STATE_EXPECT_HEAD1;
-        frameLength = 0;
-        frameFunction = 0;
-        frameIndex = 0;
-        payloadLength = 0;
-
-        // filter.begin(50);  // 50Hz  // 注释掉以节省内存
-
-        currentArmState = ARM_STATE_UNKNOWN;
-        lastArmState = ARM_STATE_UNKNOWN;
-        passedNatural = false;
-        passedHalf = false;
-        pickTriggered = false;
-        stateHoldStart = 0;
-        pickSignalStart = 0;
+    SensorIMU(uint8_t address = 0x68) {
+        imuAddr = address;
+        accXRaw = accYRaw = accZRaw = 0;
+        gyroXRaw = gyroYRaw = gyroZRaw = 0;
+        tempRaw = 0;
+        currentPosture = POSTURE_UNKNOWN;
+        stableCountThreshold = 2;
+        naturalCount = halfCount = pickCount = 0;
     }
 
-    // 初始化
-    void init() {
-        reset();
-        imuSerial.begin(115200);
-        Serial.println("[IMU] serial begin: 115200");
-    }
-
-    // 请求输出数据（初始化后调用）
-    void requestEuler() {
-        // 重置用户数据
-        uint8_t cmdReset[] = {0x7E, 0x23, 0x07, 0xA0, 0x01, 0x5F, 0xE8};
-        imuSerial.write(cmdReset, 7);
-        delay(500);
-
-        // 设置输出频率 50Hz
-        uint8_t cmdFreq[] = {0x7E, 0x23, 0x07, 0x60, 0x32, 0x5F, 0xD9};
-        imuSerial.write(cmdFreq, 7);
+    // 初始化（替代 init()）
+    bool begin() {
+        Wire.begin();
+        Wire.setClock(100000);
         delay(100);
-        Serial.println("[IMU] commands sent");
+
+        // 唤醒 MPU6050
+        writeRegister(0x6B, 0x00);
+        delay(100);
+
+        // 加速度量程 ±2g
+        writeRegister(0x1C, 0x00);
+        // 陀螺仪量程 ±250°/s
+        writeRegister(0x1B, 0x00);
+        // 低通滤波
+        writeRegister(0x1A, 0x03);
+
+        // 检测是否能读到数据
+        uint8_t testValue = 0;
+        return readRegisters(0x75, 1, &testValue);
     }
 
-    // 重置解析状态
-    void reset() {
-        rxState = RX_STATE_EXPECT_HEAD1;
-        frameLength = 0;
-        frameFunction = 0;
-        frameIndex = 0;
-        payloadLength = 0;
+    // 读取数据
+    bool read() {
+        uint8_t buffer[14];
+        if (!readRegisters(0x3B, 14, buffer)) {
+            return false;
+        }
+
+        accXRaw  = (int16_t)(buffer[0] << 8 | buffer[1]);
+        accYRaw  = (int16_t)(buffer[2] << 8 | buffer[3]);
+        accZRaw  = (int16_t)(buffer[4] << 8 | buffer[5]);
+        tempRaw  = (int16_t)(buffer[6] << 8 | buffer[7]);
+        gyroXRaw = (int16_t)(buffer[8] << 8 | buffer[9]);
+        gyroYRaw = (int16_t)(buffer[10] << 8 | buffer[11]);
+        gyroZRaw = (int16_t)(buffer[12] << 8 | buffer[13]);
+
+        return true;
     }
 
     // 更新（主循环调用）
     void update() {
-        while (imuSerial.available()) {
-            receiveByte(imuSerial.read());
+        if (read()) {
+            updatePostureState(getAccX(), getAccY(), getAccZ());
         }
     }
 
-    // ===== 手势识别 =====
-    ArmState classifyArmState(float roll, float pitch, float yaw,
-                               float gx, float gy, float gz) {
-        // 稳定性判断
-        bool stable = (abs(gx) < 0.50f && abs(gy) < 0.50f && abs(gz) < 0.50f);
-        if (!stable) return ARM_STATE_UNKNOWN;
+    // ===== 获取加速度(g) =====
+    float getAccX() { return accXRaw / 16384.0; }
+    float getAccY() { return accYRaw / 16384.0; }
+    float getAccZ() { return accZRaw / 16384.0; }
 
-        // 自然下垂: roll>50, pitch在-35~5之间
-        if (roll > 50.0f && pitch > -35.0f && pitch < 5.0f) {
-            return ARM_STATE_NATURAL_DOWN;
-        }
+    // ===== 获取陀螺仪(deg/s) =====
+    float getGyroX() { return gyroXRaw / 131.0; }
+    float getGyroY() { return gyroYRaw / 131.0; }
+    float getGyroZ() { return gyroZRaw / 131.0; }
 
-        // 半抬: roll在-40~20之间, pitch<-40
-        if (roll > -40.0f && roll < 20.0f && pitch < -40.0f) {
-            return ARM_STATE_HALF_RAISED;
-        }
+    // ===== 获取温度 =====
+    float getTemperature() { return tempRaw / 340.0 + 36.53; }
 
-        // 摘果子: roll<-50, pitch在-30~10之间
-        if (roll < -50.0f && pitch > -30.0f && pitch < 10.0f) {
-            return ARM_STATE_PICKING;
-        }
+    // ===== 获取姿态状态 =====
+    Posture getPosture() { return currentPosture; }
 
-        return ARM_STATE_UNKNOWN;
-    }
+    // 兼容旧接口：获取 ArmState（项目中其他地方用）
+    Posture getArmState() { return currentPosture; }
 
-    // 检测摘果子动作（需在loop中调用）
-    void detectPickAction() {
-        unsigned long now = millis();
+    // 设置稳定阈值
+    void setStableCount(int count) { stableCountThreshold = count; }
 
-        ArmState detected = classifyArmState(roll, pitch, yaw, gx, gy, gz);
-        currentArmState = detected;
-
-        if (currentArmState != lastArmState) {
-            stateHoldStart = now;
-            lastArmState = currentArmState;
-        }
-
-        // 第一步：自然下垂
-        if (currentArmState == ARM_STATE_NATURAL_DOWN) {
-            passedNatural = true;
-            passedHalf = false;
-            pickTriggered = false;
-        }
-
-        // 第二步：半抬
-        if (passedNatural && currentArmState == ARM_STATE_HALF_RAISED) {
-            passedHalf = true;
-        }
-
-        // 第三步：摘果子
-        if (passedNatural && passedHalf && currentArmState == ARM_STATE_PICKING) {
-            if (!pickTriggered && (now - stateHoldStart >= 200)) {
-                pickTriggered = true;
-                pickSignalStart = now;
-                Serial.println(">>> PICK_FRUIT_ACTION DETECTED <<<");
-                digitalWrite(13, HIGH);  // LED 反馈
-            }
-        }
-
-        // LED 500ms 后关闭
-        if (pickTriggered && (now - pickSignalStart >= 500)) {
-            digitalWrite(13, LOW);
-        }
-    }
-
-    // ===== 测试：打印数据 =====
+    // ===== 测试打印 =====
     void test() {
-        Serial.print("Roll: ");
-        Serial.print(roll, 2);
-        Serial.print(" Pitch: ");
-        Serial.print(pitch, 2);
-        Serial.print(" Yaw: ");
-        Serial.println(yaw, 2);
-
-        Serial.print("Ax: ");
-        Serial.print(ax, 3);
-        Serial.print(" Ay: ");
-        Serial.print(ay, 3);
-        Serial.print(" Az: ");
-        Serial.println(az, 3);
-
-        Serial.print("Gx: ");
-        Serial.print(gx, 3);
-        Serial.print(" Gy: ");
-        Serial.print(gy, 3);
-        Serial.print(" Gz: ");
-        Serial.println(gz, 3);
+        Serial.print("ACC: ");
+        Serial.print(getAccX(), 3); Serial.print(", ");
+        Serial.print(getAccY(), 3); Serial.print(", ");
+        Serial.print(getAccZ(), 3);
     }
 
-    // 打印手势状态
     void printArmState() {
-        const char* stateNames[] = {"UNKNOWN", "NATURAL_DOWN", "HALF_RAISED", "PICKING"};
+        const char* names[] = {"UNKNOWN", "NATURAL_DOWN", "HALF_RAISED", "PICKING"};
         Serial.print("ArmState: ");
-        Serial.print(stateNames[currentArmState]);
-        Serial.print(" | Seq: natural=");
-        Serial.print(passedNatural ? "1" : "0");
-        Serial.print(" half=");
-        Serial.print(passedHalf ? "1" : "0");
-        Serial.print(" pick=");
-        Serial.println(pickTriggered ? "1" : "0");
+        Serial.println(names[currentPosture]);
     }
-
-private:
-    // 接收一个字节
-    void receiveByte(uint8_t byte) {
-        switch (rxState) {
-            case RX_STATE_EXPECT_HEAD1:
-                rxState = (byte == FRAME_HEAD1) ? RX_STATE_EXPECT_HEAD2 : RX_STATE_EXPECT_HEAD1;
-                break;
-
-            case RX_STATE_EXPECT_HEAD2:
-                rxState = (byte == FRAME_HEAD2) ? RX_STATE_EXPECT_LENGTH : RX_STATE_EXPECT_HEAD1;
-                break;
-
-            case RX_STATE_EXPECT_LENGTH:
-                frameLength = byte;
-                rxState = RX_STATE_EXPECT_FUNCTION;
-                break;
-
-            case RX_STATE_EXPECT_FUNCTION:
-                frameFunction = byte;
-                frameIndex = 0;
-                rxState = RX_STATE_COLLECT_DATA;
-                break;
-
-            case RX_STATE_COLLECT_DATA: {
-                uint16_t dataLength = (frameLength >= 4) ? (uint16_t)(frameLength - 4) : 0;
-                if (dataLength == 0 || dataLength > sizeof(frameBuffer)) {
-                    rxState = RX_STATE_EXPECT_HEAD1;
-                    break;
-                }
-                frameBuffer[frameIndex++] = byte;
-                if (frameIndex >= dataLength) {
-                    payloadLength = dataLength - 1;
-
-                    // 校验和
-                    uint8_t checksum = FRAME_HEAD1 + FRAME_HEAD2 + frameLength + frameFunction;
-                    for (uint16_t i = 0; i < payloadLength; ++i) {
-                        checksum += frameBuffer[i];
-                    }
-
-                    if (checksum == frameBuffer[dataLength - 1]) {
-                        parseFrameData();
-                    }
-                    rxState = RX_STATE_EXPECT_HEAD1;
-                }
-            } break;
-
-            default:
-                rxState = RX_STATE_EXPECT_HEAD1;
-                break;
-        }
-    }
-
-    // 解析数据帧
-    void parseFrameData() {
-        if (frameFunction == IMU_FUNC_RAW_ACCEL) {
-            if (payloadLength < 12) return;
-
-            // 加速度（小端存储）
-            int16_t ax_raw = (int16_t)(frameBuffer[1] << 8 | frameBuffer[0]);
-            int16_t ay_raw = (int16_t)(frameBuffer[3] << 8 | frameBuffer[2]);
-            int16_t az_raw = (int16_t)(frameBuffer[5] << 8 | frameBuffer[4]);
-
-            ax = ax_raw * (16.0f / 32767.0f);
-            ay = ay_raw * (16.0f / 32767.0f);
-            az = az_raw * (16.0f / 32767.0f);
-
-            // 角速度
-            float gyroRatio = (2000.0f / 32767.0f) * (PI / 180.0f);
-            gx = ((int16_t)(frameBuffer[7] << 8 | frameBuffer[6])) * gyroRatio;
-            gy = ((int16_t)(frameBuffer[9] << 8 | frameBuffer[8])) * gyroRatio;
-            gz = ((int16_t)(frameBuffer[11] << 8 | frameBuffer[10])) * gyroRatio;
-
-            // 直接使用原始数据（不用Madgwick滤波节省内存）
-            // filter.update(gx, gy, gz, ax, ay, az, 0.0f, 0.0f, 0.0f);
-            // roll  = filter.getRoll();
-            // pitch = filter.getPitch();
-            // yaw   = filter.getYaw();
-        }
-        else if (frameFunction == IMU_FUNC_EULER) {
-            if (payloadLength < 12) return;
-            const float RAD2DEG = 57.2957795f;
-            roll  = toFloat(&frameBuffer[0]) * RAD2DEG;
-            pitch = toFloat(&frameBuffer[4]) * RAD2DEG;
-            yaw   = toFloat(&frameBuffer[8]) * RAD2DEG;
-        }
-    }
-
-    // 小端转 float
-    float toFloat(const uint8_t *bytes) {
-        float value;
-        memcpy(&value, bytes, sizeof(float));
-        return value;
-    }
-
-public:
-    // ===== 获取数据 =====
-    float getRoll() const { return roll; }
-    float getPitch() const { return pitch; }
-    float getYaw() const { return yaw; }
-
-    float getAx() const { return ax; }
-    float getAy() const { return ay; }
-    float getAz() const { return az; }
-
-    float getGx() const { return gx; }
-    float getGy() const { return gy; }
-    float getGz() const { return gz; }
-
-    ArmState getArmState() const { return currentArmState; }
 };
 
 #endif

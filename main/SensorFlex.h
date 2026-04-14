@@ -10,6 +10,7 @@ const float FLEX_ANGLE_THRESHOLD = 45.0;     // 弯曲阈值
 const float FLEX_HYSTERESIS = 2.0;          // 迟滞范围
 const unsigned long FLEX_PRINT_INTERVAL = 500; // 输出间隔(ms)
 const int FLEX_RANGE_MARGIN = 50;           // 状态判定范围边界
+const int FLEX_FLAT_MIN_RAW = 0;            // 伸直最小阈值
 
 // ========== 详细状态枚举（两种状态）==========
 enum FlexDetailedState {

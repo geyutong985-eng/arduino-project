@@ -14,7 +14,7 @@
 #define MOTOR_PIN 6
 const int FLEX_PIN = A3;
 // const int PPG_PIN = A0;
-const int PRESSURE_PIN = A4;
+const int PRESSURE_PIN = A0;
 
 // ===== 模块实例 =====
 ActuatorPneumatic pneumatic;
@@ -70,8 +70,8 @@ void handleCommand() {
         case 'i':
             Serial.println("[测试] IMU...");
             imu.update();
-            Serial.print("Pitch: ");
-            Serial.println(imu.getPitch());
+            imu.test();
+            imu.printArmState();
             break;
         case 'v':
             Serial.println("[测试] 压力传感器...");
@@ -310,11 +310,11 @@ void setup() {
     pneumatic.init(PUMP_PIN, VALVE_PIN);
     vibration.init(MOTOR_PIN);
     flex.init();
-    imu.init();
-    // ppg.init();
-    pressure.init();
-    pressure.setThreshold(150);
-    imu.requestEuler();
+    if (!imu.begin()) {
+        Serial.println("[IMU] init failed!");
+    } else {
+        Serial.println("[IMU] init OK");
+    }
 
     Serial.println("=== 系统就绪 ===");
     Serial.println("h -> 查看命令帮助");
@@ -322,9 +322,8 @@ void setup() {
 
 void loop() {
     handleCommand();       // 命令层
-    updateIMU();            // IMU更新+打印
-    imu.detectPickAction(); // 手势识别
-    updateFlex();           // 传感器层
+    updateIMU();           // IMU更新+打印（包含姿态识别）
+    updateFlex();          // 传感器层
     // updatePPG();          // 传感器层 (已禁用)
     pressure.update();      // 传感器层
     controlPneumatic();     // 联动层
