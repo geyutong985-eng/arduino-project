@@ -1,108 +1,197 @@
-// 主循环 - 分层架构
+// 主循环 - 分层架构（双IMU + TF卡版本）
 // 命令层 → 传感器层 → 联动层 → 硬件层
 
 #include "ActuatorPneumatic.h"
 #include "ActuatorVibration.h"
 #include "SensorIMU.h"
-// #include "SensorPPG.h"  // 禁用以节省内存
 #include "SensorFlex.h"
 #include "SensorPressure.h"
+#include "SensorTF.h"
 
 // ===== 引脚定义 =====
 #define PUMP_PIN 8
 #define VALVE_PIN 9
 #define MOTOR_PIN 6
 const int FLEX_PIN = A3;
-// const int PPG_PIN = A0;
 const int PRESSURE_PIN = A0;
+const int TF_CS_PIN = 10;
+
+// ===== IMU地址 =====
+const uint8_t IMU1_ADDR = 0x68;
+const uint8_t IMU2_ADDR = 0x69;
+
+// ===== 打印间隔 =====
+const unsigned long PRINT_INTERVAL = 300;
+const unsigned long LOG_INTERVAL = 100;
 
 // ===== 模块实例 =====
 ActuatorPneumatic pneumatic;
 ActuatorVibration vibration;
-SensorIMU imu;
-// SensorPPG ppg(PPG_PIN, 50);  // 禁用
+SensorIMU imuUpper(IMU1_ADDR, "IMU1");   // 上臂
+SensorIMU imuLower(IMU2_ADDR, "IMU2");   // 前臂
+DualIMUPostureClassifier postureClassifier;
 SensorFlex flex(FLEX_PIN);
 SensorPressure pressure(PRESSURE_PIN);
+SensorTF tfLogger;
 
-// ===== 联动配置 =====
-bool enableFlexPneumatic = true;  // 弯曲→气动联动
-bool enableVibration = true;     // 震动触发
+// ===== 配置开关 =====
+bool enableFlexPneumatic = true;
+bool enableVibration = true;
+bool enableTFLogging = true;
+bool enableDualIMUPrint = true;
+
+// ===== 时间变量 =====
+unsigned long lastIMUPrintTime = 0;
+unsigned long lastLogTime = 0;
+
+// ===== 姿态状态 =====
+Posture combinedPosture = POSTURE_UNKNOWN;
+
+// ===== 气动联动变量 =====
+static unsigned long inflateStartTime = 0;
+static bool isInflating = false;
+static bool inflateTriggered = false;
+
+// ===== 震动联动变量 =====
+static unsigned long vibrationDelayStart = 0;
+static bool vibrationDelayTriggered = false;
+static bool lastPressureState = false;
+static bool vibrationPatternActive = false;
+
+// ===== TF日志事件 =====
+void logTFEvent(const __FlashStringHelper *eventText) {
+    if (!enableTFLogging || !tfLogger.isReady()) {
+        return;
+    }
+    tfLogger.appendEvent(millis(), eventText);
+}
+
+// ===== 打印双IMU数据 =====
+void printDualIMUData() {
+    imuUpper.printLabeledData();
+    imuLower.printLabeledData();
+    imuUpper.printArmState();
+    imuLower.printArmState();
+    Serial.print(F("[COMBINED] Posture: "));
+    Serial.print(postureToString(combinedPosture));
+    Serial.print(F(" | Score: "));
+    Serial.println(postureClassifier.getCurrentScore(), 4);
+}
 
 // ============================================================
 // 命令层：handleCommand()
 // ============================================================
 void handleCommand() {
-    if (!Serial.available()) return;
+    if (!Serial.available()) {
+        return;
+    }
 
     char cmd = Serial.read();
-    if (cmd == '\n' || cmd == '\r') return;
+    if (cmd == '\n' || cmd == '\r') {
+        return;
+    }
 
-    // 校准命令
     switch (cmd) {
         case 'f':
             flex.calibrateFlat();
-            Serial.println(">> 伸直校准完成");
+            Serial.println(F(">> Flex flat calibration done"));
+            logTFEvent(F("EVENT:flex_flat_calibrated"));
             break;
+
         case 'b':
             flex.calibrateBent();
-            Serial.print(">> 弯曲校准完成, Diff=");
-            Serial.println(abs(flex.getRaw() - 0));  // TODO: 获取校准值
+            Serial.println(F(">> Flex bent calibration done"));
+            logTFEvent(F("EVENT:flex_bent_calibrated"));
             break;
+
         case 's':
             flex.printStatus();
             break;
+
         case 'r':
             flex.reset();
-            Serial.println(">> 已重置校准");
+            Serial.println(F(">> Flex calibration reset"));
+            logTFEvent(F("EVENT:flex_reset"));
             break;
+
+        case 'i':
+            Serial.println(F("[Test] Read both IMUs once"));
+            imuUpper.update();
+            imuLower.update();
+            combinedPosture = postureClassifier.update(imuUpper, imuLower);
+            printDualIMUData();
+            break;
+
+        case 'o':
+            enableDualIMUPrint = !enableDualIMUPrint;
+            Serial.print(F("[Config] Dual IMU serial output "));
+            Serial.println(enableDualIMUPrint ? F("enabled") : F("disabled"));
+            break;
+
         case 't':
-            Serial.println("[测试] 气动充气 3秒...");
+            Serial.println(F("[Test] Pneumatic inflate for 3 seconds"));
             pneumatic.startInflate();
             delay(3000);
             pneumatic.stop();
-            Serial.println("[测试] 完成");
+            Serial.println(F("[Test] Pneumatic test done"));
+            logTFEvent(F("EVENT:pneumatic_test"));
             break;
-        // case 'p':
-            // Serial.println("[测试] PPG 输出...");
-            // ppg.update();
-            // ppg.test();
-            // break;
-        case 'i':
-            Serial.println("[测试] IMU...");
-            imu.update();
-            imu.test();
-            imu.printArmState();
-            break;
+
         case 'v':
-            Serial.println("[测试] 压力传感器...");
+            Serial.println(F("[Test] Pressure sensor"));
             pressure.test();
             break;
+
         case 'w':
-            Serial.println("[测试] 震动马达...");
+            Serial.println(F("[Test] Vibration motor"));
             vibration.start();
+            logTFEvent(F("EVENT:vibration_test"));
             break;
+
         case 'e':
             enableFlexPneumatic = true;
-            Serial.println("[配置] 弯曲→气动: 已启用");
+            Serial.println(F("[Config] Flex to pneumatic enabled"));
+            logTFEvent(F("EVENT:flex_pneumatic_enabled"));
             break;
+
         case 'd':
             enableFlexPneumatic = false;
-            Serial.println("[配置] 弯曲→气动: 已禁用");
+            Serial.println(F("[Config] Flex to pneumatic disabled"));
+            logTFEvent(F("EVENT:flex_pneumatic_disabled"));
             break;
+
+        case 'm':
+            enableTFLogging = !enableTFLogging;
+            Serial.print(F("[Config] TF logging "));
+            Serial.println(enableTFLogging ? F("enabled") : F("disabled"));
+            if (enableTFLogging) {
+                logTFEvent(F("EVENT:tf_logging_enabled"));
+            }
+            break;
+
+        case 'l':
+            Serial.print(F("[TF] ready="));
+            Serial.print(tfLogger.isReady() ? F("yes") : F("no"));
+            Serial.print(F(", file="));
+            Serial.println(tfLogger.getFileName());
+            break;
+
         case 'h':
-            Serial.println("===== 命令帮助 =====");
-            Serial.println("f -> 校准伸直");
-            Serial.println("b -> 校准弯曲");
-            Serial.println("s -> 状态");
-            Serial.println("r -> 重置");
-            Serial.println("t -> 测试气动");
-            Serial.println("p -> 测试PPG");
-            Serial.println("i -> 测试IMU");
-            Serial.println("e -> 启用弯曲→气动");
-            Serial.println("d -> 禁用弯曲→气动");
-            Serial.println("v -> 测试压力传感器");
-            Serial.println("w -> 测试震动马达");
-            Serial.println("h -> 帮助");
+            Serial.println(F("===== Command Help ====="));
+            Serial.println(F("f -> calibrate flex flat"));
+            Serial.println(F("b -> calibrate flex bent"));
+            Serial.println(F("s -> show flex status"));
+            Serial.println(F("r -> reset flex calibration"));
+            Serial.println(F("i -> print both IMUs once"));
+            Serial.println(F("o -> toggle periodic dual-IMU output"));
+            Serial.println(F("t -> test pneumatic"));
+            Serial.println(F("v -> test pressure sensor"));
+            Serial.println(F("w -> test vibration motor"));
+            Serial.println(F("e -> enable flex pneumatic"));
+            Serial.println(F("d -> disable flex pneumatic"));
+            Serial.println(F("m -> toggle TF logging"));
+            Serial.println(F("l -> show TF logger status"));
+            Serial.println(F("h -> help"));
             break;
     }
 }
@@ -110,111 +199,81 @@ void handleCommand() {
 // ============================================================
 // 传感器层
 // ============================================================
-unsigned long lastIMUPrintTime = 0;
-const unsigned long PRINT_INTERVAL = 500;
-
 void updateFlex() {
     if (!flex.isCalibrated()) {
         static unsigned long lastReminder = 0;
         if (millis() - lastReminder >= 3000) {
             lastReminder = millis();
-            Serial.println(">> 请校准弯曲传感器: f (伸直) + b (弯曲)");
+            Serial.println(F(">> Please calibrate flex sensor: f then b"));
         }
         return;
     }
-    flex.update();
 
-    // 调试：显示详细状态
-    static unsigned long lastDebug = 0;
-    if (millis() - lastDebug >= 2000) {
-        lastDebug = millis();
-        int raw = flex.getRaw();
-        // 注意：这里无法直接访问 private 成员，需要添加 getter
-    }
+    flex.update();
 }
 
-// void updatePPG() {
-//     ppg.update();
-
-    // unsigned long now = millis();
-    // if (now - lastPPGPrintTime >= PRINT_INTERVAL) {
-    //     lastPPGPrintTime = now;
-    //     ppg.test();
-    // }
-// }
-
-void updateIMU() {
-    imu.update();
+void updateIMUs() {
+    imuUpper.update();
+    imuLower.update();
+    combinedPosture = postureClassifier.update(imuUpper, imuLower);
 
     unsigned long now = millis();
-    if (now - lastIMUPrintTime >= PRINT_INTERVAL) {
+    if (enableDualIMUPrint && now - lastIMUPrintTime >= PRINT_INTERVAL) {
         lastIMUPrintTime = now;
-        imu.test();
-        imu.printArmState();
+        printDualIMUData();
     }
 }
 
 // ============================================================
 // 联动层：controlPneumatic()
-// 充气条件（4种任一满足 → 充气5秒）：
-//   1. 弯曲中间 + IMU半抬
-//   2. 弯曲中间 + IMU举起
-//   3. 弯曲伸直 + IMU半抬
-//   4. 弯曲伸直 + IMU举起
+// 充气条件：弯曲伸直 + (IMU半抬 或 IMU举起)
 // 放气条件：弯曲传感器弯曲 → 立即放气
 // ============================================================
-static unsigned long inflateStartTime = 0;
-static bool isInflating = false;
-static bool inflateTriggered = false;  // 充气已触发过
-
 void controlPneumatic() {
-    if (!enableFlexPneumatic) return;
-    if (!flex.isCalibrated()) return;
+    if (!enableFlexPneumatic || !flex.isCalibrated()) {
+        return;
+    }
 
     FlexDetailedState fState = flex.getDetailedState();
-    ArmState imuState = imu.getArmState();
+    ArmState imuState = combinedPosture;
 
-    // 判断是否应该充气（两种条件：伸直+半抬 或 伸直+举起）
     bool shouldInflate = false;
-
     if (fState == FLEX_DETAILED_FLAT && imuState == ARM_STATE_HALF_RAISED) {
         shouldInflate = true;
     } else if (fState == FLEX_DETAILED_FLAT && imuState == ARM_STATE_PICKING) {
         shouldInflate = true;
     }
 
-    // 判断是否应该放气（弯曲即放）
     bool shouldDeflate = (fState == FLEX_DETAILED_BENT);
 
-    // 充气逻辑
     if (shouldInflate && !isInflating && !inflateTriggered) {
         pneumatic.startInflate();
         inflateStartTime = millis();
         isInflating = true;
         inflateTriggered = true;
+        logTFEvent(F("EVENT:pneumatic_inflate_start"));
     }
 
-    // 充气5秒后停止
     if (isInflating && millis() - inflateStartTime >= 5000) {
         pneumatic.stop();
         isInflating = false;
+        logTFEvent(F("EVENT:pneumatic_stop"));
     }
 
-    // 放气逻辑（弯曲即放）
     if (shouldDeflate && (isInflating || inflateTriggered)) {
         pneumatic.stop();
         pneumatic.startDeflate();
         isInflating = false;
         inflateTriggered = false;
+        logTFEvent(F("EVENT:pneumatic_deflate"));
     }
 }
 
-// 检查是否可以重新触发充气（状态回到初始时）
+// 检查是否可以重新触发充气
 void resetPneumaticIfNeeded() {
     FlexDetailedState fState = flex.getDetailedState();
-    ArmState imuState = imu.getArmState();
+    ArmState imuState = combinedPosture;
 
-    // 当状态回到初始（弯曲+半抬）时，可以重新触发充气
     if (fState == FLEX_DETAILED_BENT && imuState == ARM_STATE_HALF_RAISED) {
         inflateTriggered = false;
     }
@@ -223,31 +282,25 @@ void resetPneumaticIfNeeded() {
 // ============================================================
 // 联动层：controlVibration()
 // 触发条件（三选一，延迟2秒）：
-//   1. 弯曲传感器伸直 + IMU未到举起
+//   1. 弯曲传感器伸直 + IMU半抬
 //   2. IMU举起 + 弯曲传感器未伸直
 //   3. 两者都到位 + 压力传感器未按下
-// 震动模式：震动500ms → 停5秒 → 再震动 → 重复
-// 压力传感器按下：停止本次震动；松开后重新监测
+// 压力传感器按下：停止本次震动
 // ============================================================
-static unsigned long vibrationDelayStart = 0;
-static bool vibrationDelayTriggered = false;
-static bool lastPressureState = false;  // 上次压力传感器状态
-static unsigned long vibrationRepeatStart = 0;
-static bool vibrationPatternActive = false;
-
 void controlVibration() {
-    if (!enableVibration) return;
-    if (!flex.isCalibrated()) return;
-    if (!flex.isCalibrationValid()) return;
+    if (!enableVibration || !flex.isCalibrated() || !flex.isCalibrationValid()) {
+        return;
+    }
 
     FlexDetailedState fState = flex.getDetailedState();
-    ArmState imuState = imu.getArmState();
+    ArmState imuState = combinedPosture;
     bool pressurePressed = pressure.isPressed();
 
     // 压力传感器按下：立即停止震动
     if (pressurePressed) {
         if (vibration.isActive()) {
             vibration.stop();
+            logTFEvent(F("EVENT:vibration_stop_pressure"));
         }
         vibrationDelayTriggered = false;
         vibrationPatternActive = false;
@@ -264,7 +317,7 @@ void controlVibration() {
     // 判断是否应该触发震动
     bool shouldVibrate = false;
 
-    // 情况1: 弯曲传感器伸直 + IMU半抬（排除自然下垂）
+    // 情况1: 弯曲传感器伸直 + IMU半抬
     if (fState == FLEX_DETAILED_FLAT && imuState == ARM_STATE_HALF_RAISED) {
         shouldVibrate = true;
     }
@@ -291,14 +344,56 @@ void controlVibration() {
     }
 
     // 2秒延时后开始震动模式
-    if (millis() - vibrationDelayStart >= 2000) {
-        if (!vibrationPatternActive) {
-            vibrationPatternActive = true;
-            vibrationRepeatStart = millis();
-            vibration.setDuration(500);
-            vibration.start();
-        }
+    if (millis() - vibrationDelayStart >= 2000 && !vibrationPatternActive) {
+        vibrationPatternActive = true;
+        vibration.setDuration(500);
+        vibration.start();
+        logTFEvent(F("EVENT:vibration_start"));
     }
+}
+
+// ============================================================
+// 日志层：logSensorData()
+// ============================================================
+void logSensorData() {
+    if (!enableTFLogging || !tfLogger.isReady()) {
+        return;
+    }
+
+    unsigned long now = millis();
+    if (now - lastLogTime < LOG_INTERVAL) {
+        return;
+    }
+    lastLogTime = now;
+
+    tfLogger.appendSample(
+        now,
+        imuUpper.getAccX(),
+        imuUpper.getAccY(),
+        imuUpper.getAccZ(),
+        imuUpper.getGyroX(),
+        imuUpper.getGyroY(),
+        imuUpper.getGyroZ(),
+        (int)imuUpper.getArmState(),
+        imuLower.getAccX(),
+        imuLower.getAccY(),
+        imuLower.getAccZ(),
+        imuLower.getGyroX(),
+        imuLower.getGyroY(),
+        imuLower.getGyroZ(),
+        (int)imuLower.getArmState(),
+        (int)combinedPosture,
+        flex.getRaw(),
+        flex.getAngle(),
+        (int)flex.getDetailedState(),
+        pressure.getRaw(),
+        pressure.isPressed(),
+        enableFlexPneumatic,
+        enableVibration,
+        isInflating,
+        inflateTriggered,
+        vibration.isActive()
+    );
 }
 
 // ============================================================
@@ -310,23 +405,53 @@ void setup() {
     pneumatic.init(PUMP_PIN, VALVE_PIN);
     vibration.init(MOTOR_PIN);
     flex.init();
-    if (!imu.begin()) {
-        Serial.println("[IMU] init failed!");
+    pressure.init();
+
+    // 配置姿态分类器
+    postureClassifier.setStableThreshold(3);
+    postureClassifier.setSwitchMargin(0.08f);
+
+    // 初始化双IMU
+    bool imu1Ok = imuUpper.begin();
+    bool imu2Ok = imuLower.begin();
+
+    if (imu1Ok) {
+        Serial.println(F("[IMU1] init OK at 0x68"));
     } else {
-        Serial.println("[IMU] init OK");
+        Serial.println(F("[IMU1] init failed at 0x68"));
     }
 
-    Serial.println("=== 系统就绪 ===");
-    Serial.println("h -> 查看命令帮助");
+    if (imu2Ok) {
+        Serial.println(F("[IMU2] init OK at 0x69"));
+    } else {
+        Serial.println(F("[IMU2] init failed at 0x69"));
+    }
+
+    // 初始化TF卡
+    if (!tfLogger.begin(TF_CS_PIN, "imu_log.txt")) {
+        Serial.println(F("[TF] init failed, logging disabled"));
+        enableTFLogging = false;
+    } else {
+        Serial.print(F("[TF] logging to "));
+        Serial.println(tfLogger.getFileName());
+        logTFEvent(F("EVENT:system_start_dual_imu"));
+    }
+
+    Serial.println(F("=== System Ready ==="));
+    Serial.println(F("Two IMUs share I2C bus: IMU1=0x68, IMU2=0x69"));
+    Serial.println(F("Combined posture uses both IMUs with stable switching."));
+    Serial.println(F("Use command i to inspect both IMUs, o to toggle streaming."));
+    Serial.println(F("h -> View command help"));
 }
 
 void loop() {
-    handleCommand();       // 命令层
-    updateIMU();           // IMU更新+打印（包含姿态识别）
-    updateFlex();          // 传感器层
-    // updatePPG();          // 传感器层 (已禁用)
-    pressure.update();      // 传感器层
-    controlPneumatic();     // 联动层
-    controlVibration();     // 联动层：震动控制
-    vibration.update();     // 震动计时控制
+    handleCommand();          // 命令层
+    updateIMUs();             // 传感器层：双IMU更新
+    updateFlex();             // 传感器层
+    pressure.update();        // 传感器层
+    controlPneumatic();       // 联动层
+    resetPneumaticIfNeeded(); // 联动层
+    controlVibration();       // 联动层：震动控制
+    vibration.update();       // 震动计时控制
+    logSensorData();          // 日志层
 }

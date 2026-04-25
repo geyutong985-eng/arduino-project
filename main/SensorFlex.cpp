@@ -70,7 +70,7 @@ void SensorFlex::update() {
     Serial.print(angle, 1);
     Serial.print("  State: ");
     Serial.print(getStateName());
-    if (bentTriggered) Serial.print(" >>BENT");
+    if (bentTriggered) Serial.print(" >>FLAT");
     Serial.println();
 }
 
@@ -160,8 +160,8 @@ FlexDetailedState SensorFlex::getDetailedState() const {
 
     int raw = readStableRaw();
 
-    // 两种状态：raw < flatValue 为伸直，其余为弯曲
-    if (raw < flatValue) {
+    // 两种状态：raw > flatValue 为伸直，其余为弯曲（传感器特性：弯曲时ADC值变小）
+    if (raw > flatValue) {
         return FLEX_DETAILED_FLAT;
     }
 
