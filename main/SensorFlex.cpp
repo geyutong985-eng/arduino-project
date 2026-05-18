@@ -155,7 +155,7 @@ const char* SensorFlex::getStateName() const {
     return "中间";
 }
 
-FlexDetailedState SensorFlex::getDetailedState() const {
+FlexDetailedState SensorFlex::getDetailedState() {
     if (!isCalibrated()) return FLEX_DETAILED_BENT;
 
     int raw = readStableRaw();

@@ -1,14 +1,20 @@
 #include "SensorPressure.h"
 
 SensorPressure::SensorPressure(int pin) : pressurePin(pin), bufferIndex(0),
-    bufferFilled(false), filteredValue(0), pressThreshold(100), lastPrintTime(0) {}
+    bufferFilled(false), filteredValue(0), pressThreshold(600), lastPrintTime(0) {}
 
 void SensorPressure::init() {
     pinMode(pressurePin, INPUT);
-    Serial.println("=== Pressure Sensor ===");
+
+    // 检查引脚模式
+    Serial.print("=== Pressure Sensor (Pin ");
+    Serial.print(pressurePin);
+    Serial.println(") ===");
 
     // 初始化缓冲区：用第一次读数填满
     int firstVal = analogRead(pressurePin);
+    Serial.print("First Read: ");
+    Serial.println(firstVal);
     for (int i = 0; i < PRESSURE_FILTER_WINDOW; i++) {
         medianBuffer[i] = firstVal;
     }
@@ -22,6 +28,7 @@ void SensorPressure::update() {
     unsigned long now = millis();
     if (now - lastPrintTime < PRESSURE_PRINT_INTERVAL) return;
     lastPrintTime = now;
+
 
     // 读取并滤波
     filteredValue = readMedian();

@@ -39,7 +39,7 @@ public:
     float getNormalized() const;
     FlexState getState() const;
     const char* getStateName() const;
-    FlexDetailedState getDetailedState() const;
+    FlexDetailedState getDetailedState();
     bool isCalibrated() const;
     bool isCalibrationValid() const;
     void printStatus() const;

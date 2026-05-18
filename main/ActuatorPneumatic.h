@@ -1,18 +1,12 @@
-// 气动模块控制（气泵+气阀）
-// 功能：控制充气/维持/放气，内部状态机
-// 引脚：D8-气泵（充气）, D9-气阀（放气）
+// 手掌气动模块控制（气泵+气阀）
+// 功能：控制充气/放气，由压力传感器触发
+// 引脚：D8-气泵（充气）, D9-气阀（放气）/ 压力按下 → 充气 / 松开 → 放气
 
 #ifndef ACTUATOR_PNEUMATIC_H
 #define ACTUATOR_PNEUMATIC_H
 
 #include <Arduino.h>
-
-enum PneumaticState {
-    PNEUMATIC_IDLE,      // 空闲
-    PNEUMATIC_INFLATING, // 充气中
-    PNEUMATIC_HOLDING,   // 维持气压
-    PNEUMATIC_DEFLATING // 放气中
-};
+#include "PneumaticState.h"
 
 class ActuatorPneumatic {
 private:

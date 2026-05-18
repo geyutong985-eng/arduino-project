@@ -1,17 +1,22 @@
-// 主循环 - 分层架构（双IMU + TF卡版本）
+// 主循环 - 分层架构（双IMU + 双气动 + TF卡）
 // 命令层 → 传感器层 → 联动层 → 硬件层
 
 #include "ActuatorPneumatic.h"
+#include "ActuatorPneumatic2.h"
 #include "ActuatorVibration.h"
 #include "SensorIMU.h"
 #include "SensorFlex.h"
 #include "SensorPressure.h"
 #include "SensorTF.h"
+#include "PneumaticState.h"
 
 // ===== 引脚定义 =====
-#define PUMP_PIN 8
-#define VALVE_PIN 9
+#define PALM_PUMP_PIN 8
+#define PALM_VALVE_PIN 9
+#define FOREARM_PUMP_PIN 2
+#define FOREARM_VALVE_PIN 3
 #define MOTOR_PIN 6
+#define MOTOR2_PIN 10
 const int FLEX_PIN = A3;
 const int PRESSURE_PIN = A0;
 const int TF_CS_PIN = 10;
@@ -25,8 +30,10 @@ const unsigned long PRINT_INTERVAL = 300;
 const unsigned long LOG_INTERVAL = 100;
 
 // ===== 模块实例 =====
-ActuatorPneumatic pneumatic;
-ActuatorVibration vibration;
+ActuatorPneumatic pneumatic;      // 手掌气动
+ActuatorPneumatic2 pneumatic2;  // 小臂气动
+ActuatorVibration vibration;    // D6 震动
+ActuatorVibration vibration2;  // D10 震动
 SensorIMU imuUpper(IMU1_ADDR, "IMU1");   // 上臂
 SensorIMU imuLower(IMU2_ADDR, "IMU2");   // 前臂
 DualIMUPostureClassifier postureClassifier;
@@ -35,7 +42,8 @@ SensorPressure pressure(PRESSURE_PIN);
 SensorTF tfLogger;
 
 // ===== 配置开关 =====
-bool enableFlexPneumatic = true;
+bool enablePalmPneumatic = true;
+bool enableForearmPneumatic = true;
 bool enableVibration = true;
 bool enableTFLogging = true;
 bool enableDualIMUPrint = true;
@@ -47,16 +55,24 @@ unsigned long lastLogTime = 0;
 // ===== 姿态状态 =====
 Posture combinedPosture = POSTURE_UNKNOWN;
 
-// ===== 气动联动变量 =====
-static unsigned long inflateStartTime = 0;
-static bool isInflating = false;
-static bool inflateTriggered = false;
+// ===== 小臂气动联动变量 =====
+static bool forearmInflateTriggered = false;
+static bool lastPressurePressed = false;
 
 // ===== 震动联动变量 =====
-static unsigned long vibrationDelayStart = 0;
-static bool vibrationDelayTriggered = false;
+// 记录上一个IMU状态，用于检测状态变化
+static Posture lastPostureState = POSTURE_UNKNOWN;
+
+// D10震动：检测到Half Raised变化后3秒未到Picking触发
+static unsigned long halfRaisedTime = 0;
+static bool halfRaisedTriggered = false;
+
+// D6震动：检测到Picking变化后2秒未按压触发
+static unsigned long pickingTime = 0;
+static bool pickingTriggered = false;
+
+// 通用
 static bool lastPressureState = false;
-static bool vibrationPatternActive = false;
 
 // ===== TF日志事件 =====
 void logTFEvent(const __FlashStringHelper *eventText) {
@@ -129,12 +145,30 @@ void handleCommand() {
             break;
 
         case 't':
-            Serial.println(F("[Test] Pneumatic inflate for 3 seconds"));
+            Serial.println(F("[Test] Palm pneumatic inflate for 3 seconds"));
             pneumatic.startInflate();
             delay(3000);
             pneumatic.stop();
-            Serial.println(F("[Test] Pneumatic test done"));
-            logTFEvent(F("EVENT:pneumatic_test"));
+            Serial.println(F("[Test] Palm pneumatic test done"));
+            logTFEvent(F("EVENT:palm_pneumatic_test"));
+            break;
+
+        case 'u':
+            Serial.println(F("[Test] Forearm pneumatic inflate"));
+            pneumatic2.test();
+            logTFEvent(F("EVENT:forearm_pneumatic_test"));
+            break;
+
+        case 'y':
+            enableForearmPneumatic = true;
+            Serial.println(F("[Config] Forearm pneumatic enabled"));
+            logTFEvent(F("EVENT:forearm_pneumatic_enabled"));
+            break;
+
+        case 'n':
+            enableForearmPneumatic = false;
+            Serial.println(F("[Config] Forearm pneumatic disabled"));
+            logTFEvent(F("EVENT:forearm_pneumatic_disabled"));
             break;
 
         case 'v':
@@ -149,15 +183,15 @@ void handleCommand() {
             break;
 
         case 'e':
-            enableFlexPneumatic = true;
-            Serial.println(F("[Config] Flex to pneumatic enabled"));
-            logTFEvent(F("EVENT:flex_pneumatic_enabled"));
+            enablePalmPneumatic = true;
+            Serial.println(F("[Config] Palm pneumatic enabled"));
+            logTFEvent(F("EVENT:palm_pneumatic_enabled"));
             break;
 
         case 'd':
-            enableFlexPneumatic = false;
-            Serial.println(F("[Config] Flex to pneumatic disabled"));
-            logTFEvent(F("EVENT:flex_pneumatic_disabled"));
+            enablePalmPneumatic = false;
+            Serial.println(F("[Config] Palm pneumatic disabled"));
+            logTFEvent(F("EVENT:palm_pneumatic_disabled"));
             break;
 
         case 'm':
@@ -187,8 +221,11 @@ void handleCommand() {
             Serial.println(F("t -> test pneumatic"));
             Serial.println(F("v -> test pressure sensor"));
             Serial.println(F("w -> test vibration motor"));
-            Serial.println(F("e -> enable flex pneumatic"));
-            Serial.println(F("d -> disable flex pneumatic"));
+            Serial.println(F("e -> enable palm pneumatic"));
+            Serial.println(F("d -> disable palm pneumatic"));
+            Serial.println(F("u -> test forearm pneumatic"));
+            Serial.println(F("y -> enable forearm pneumatic"));
+            Serial.println(F("n -> disable forearm pneumatic"));
             Serial.println(F("m -> toggle TF logging"));
             Serial.println(F("l -> show TF logger status"));
             Serial.println(F("h -> help"));
@@ -225,131 +262,151 @@ void updateIMUs() {
 }
 
 // ============================================================
-// 联动层：controlPneumatic()
-// 充气条件：弯曲伸直 + (IMU半抬 或 IMU举起)
-// 放气条件：弯曲传感器弯曲 → 立即放气
+// 联动层：controlPalmPneumatic()
+// 手掌气动：压力传感器按下 → 充气，放开 → 放气
 // ============================================================
-void controlPneumatic() {
-    if (!enableFlexPneumatic || !flex.isCalibrated()) {
+void controlPalmPneumatic() {
+    if (!enablePalmPneumatic) {
         return;
     }
 
-    FlexDetailedState fState = flex.getDetailedState();
-    ArmState imuState = combinedPosture;
+    bool pressurePressed = pressure.isPressed();
+    bool currentInflating = pneumatic.getState() == PNEUMATIC_INFLATING ||
+                       pneumatic.getState() == PNEUMATIC_HOLDING;
 
-    bool shouldInflate = false;
-    if (fState == FLEX_DETAILED_FLAT && imuState == ARM_STATE_HALF_RAISED) {
-        shouldInflate = true;
-    } else if (fState == FLEX_DETAILED_FLAT && imuState == ARM_STATE_PICKING) {
-        shouldInflate = true;
-    }
-
-    bool shouldDeflate = (fState == FLEX_DETAILED_BENT);
-
-    if (shouldInflate && !isInflating && !inflateTriggered) {
+    if (pressurePressed && !currentInflating) {
+        // 压力按下，开始充气
         pneumatic.startInflate();
-        inflateStartTime = millis();
-        isInflating = true;
-        inflateTriggered = true;
-        logTFEvent(F("EVENT:pneumatic_inflate_start"));
-    }
-
-    if (isInflating && millis() - inflateStartTime >= 5000) {
-        pneumatic.stop();
-        isInflating = false;
-        logTFEvent(F("EVENT:pneumatic_stop"));
-    }
-
-    if (shouldDeflate && (isInflating || inflateTriggered)) {
-        pneumatic.stop();
+        logTFEvent(F("EVENT:palm_inflate_start"));
+    } else if (!pressurePressed && currentInflating) {
+        // 压力松开，放气
         pneumatic.startDeflate();
-        isInflating = false;
-        inflateTriggered = false;
-        logTFEvent(F("EVENT:pneumatic_deflate"));
+        logTFEvent(F("EVENT:palm_deflate"));
+
+        // 手掌放气时，小臂也一起放气
+        if (pneumatic2.isActive()) {
+            pneumatic2.startDeflate();
+            forearmInflateTriggered = false;
+            logTFEvent(F("EVENT:forearm_deflate_palm"));
+        }
     }
 }
 
-// 检查是否可以重新触发充气
-void resetPneumaticIfNeeded() {
-    FlexDetailedState fState = flex.getDetailedState();
+// ============================================================
+// 联动层：controlForearmPneumatic()
+// 小臂气动：IMU半抬 → 充气9秒 → 压力按下后松开放气
+// ============================================================
+void controlForearmPneumatic() {
+    if (!enableForearmPneumatic) {
+        return;
+    }
+
     ArmState imuState = combinedPosture;
+    bool pressurePressed = pressure.isPressed();
+    bool wasInflating = pneumatic2.isActive();
 
-    if (fState == FLEX_DETAILED_BENT && imuState == ARM_STATE_HALF_RAISED) {
-        inflateTriggered = false;
+    // IMU半抬 → 开始充气
+    if (imuState == ARM_STATE_HALF_RAISED && !wasInflating && !forearmInflateTriggered) {
+        pneumatic2.startInflate();
+        forearmInflateTriggered = true;
+        logTFEvent(F("EVENT:forearm_inflate_start"));
     }
+
+    // 更新充气计时
+    if (wasInflating) {
+        pneumatic2.update();
+    }
+
+    // 气动完成了 → 重置触发标志
+    if (forearmInflateTriggered && !pneumatic2.isActive()) {
+        forearmInflateTriggered = false;
+    }
+
+    // 压力按下后松手 → 放气
+    pneumatic2.checkStopOnPressureRelease(lastPressurePressed, !pressurePressed);
+    lastPressurePressed = pressurePressed;
 }
 
+// ============================================================
 // ============================================================
 // 联动层：controlVibration()
-// 触发条件（三选一，延迟2秒）：
-//   1. 弯曲传感器伸直 + IMU半抬
-//   2. IMU举起 + 弯曲传感器未伸直
-//   3. 两者都到位 + 压力传感器未按下
-// 压力传感器按下：停止本次震动
+// D10震动：Half Raised后3秒未到Picking → 脉冲震动（1开2停循环）
+// D6震动：Picking后2秒未按压 → 脉冲震动（1开2停循环）
 // ============================================================
 void controlVibration() {
-    if (!enableVibration || !flex.isCalibrated() || !flex.isCalibrationValid()) {
+    if (!enableVibration) {
         return;
     }
 
-    FlexDetailedState fState = flex.getDetailedState();
     ArmState imuState = combinedPosture;
     bool pressurePressed = pressure.isPressed();
 
-    // 压力传感器按下：立即停止震动
-    if (pressurePressed) {
-        if (vibration.isActive()) {
-            vibration.stop();
-            logTFEvent(F("EVENT:vibration_stop_pressure"));
+    unsigned long now = millis();
+
+    // IMU状态未就绪时强制停止所有震动
+    if (imuState == ARM_STATE_UNKNOWN) {
+        vibration.stop();
+        vibration2.stop();
+        lastPostureState = imuState;
+        return;
+    }
+
+    // ----- 检测IMU状态变化 -----
+    bool postureChanged = (imuState != lastPostureState);
+    lastPostureState = imuState;
+
+    // ----- D10震动：HALF_RAISED进入时开始计时 -----
+    if (postureChanged && imuState == ARM_STATE_HALF_RAISED) {
+        halfRaisedTime = now;
+        halfRaisedTriggered = true;
+    }
+    // 状态离开HALF_RAISED：停止计时
+    else if (postureChanged && imuState != ARM_STATE_HALF_RAISED) {
+        halfRaisedTriggered = false;
+    }
+
+    // 压力按下：停止D10震动
+    if (pressurePressed && vibration2.isPulseMode()) {
+        vibration2.stop();
+    }
+
+    // 触发D10震动：HALF_RAISED状态持续3秒仍未到Picking
+    if (halfRaisedTriggered && imuState == ARM_STATE_HALF_RAISED && !pressurePressed) {
+        if (now - halfRaisedTime >= 3000 && !vibration2.isPulseMode()) {
+            vibration2.startPulse();
         }
-        vibrationDelayTriggered = false;
-        vibrationPatternActive = false;
-        lastPressureState = true;
-        return;
+    }
+    // 到了Picking：停止D10震动
+    if (imuState == ARM_STATE_PICKING && vibration2.isPulseMode()) {
+        vibration2.stop();
     }
 
-    // 检测压力传感器从按下到松开的转变
-    if (lastPressureState && !pressurePressed) {
-        vibrationDelayTriggered = false;
+    // ----- D6震动：PICKING进入时开始计时 -----
+    if (postureChanged && imuState == ARM_STATE_PICKING) {
+        pickingTime = now;
+        pickingTriggered = true;
     }
-    lastPressureState = pressurePressed;
-
-    // 判断是否应该触发震动
-    bool shouldVibrate = false;
-
-    // 情况1: 弯曲传感器伸直 + IMU半抬
-    if (fState == FLEX_DETAILED_FLAT && imuState == ARM_STATE_HALF_RAISED) {
-        shouldVibrate = true;
-    }
-    // 情况2: IMU举起 + 弯曲传感器未伸直
-    else if (imuState == ARM_STATE_PICKING && fState != FLEX_DETAILED_FLAT) {
-        shouldVibrate = true;
-    }
-    // 情况3: 两者都到位 + 压力传感器未按下
-    else if (fState == FLEX_DETAILED_FLAT && imuState == ARM_STATE_PICKING && !pressurePressed) {
-        shouldVibrate = true;
+    // 状态离开PICKING：停止计时
+    else if (postureChanged && imuState != ARM_STATE_PICKING) {
+        pickingTriggered = false;
     }
 
-    if (!shouldVibrate) {
-        vibrationDelayTriggered = false;
-        vibrationPatternActive = false;
-        return;
+    // 压力按下：停止D6震动并重置
+    if (pressurePressed) {
+        vibration.stop();
+        pickingTriggered = false;
     }
 
-    // 触发震动
-    if (!vibrationDelayTriggered) {
-        vibrationDelayStart = millis();
-        vibrationDelayTriggered = true;
-        vibrationPatternActive = false;
+    // 触发D6震动：PICKING状态持续2秒仍未按压
+    if (pickingTriggered && imuState == ARM_STATE_PICKING) {
+        if (now - pickingTime >= 2000 && !vibration.isPulseMode()) {
+            vibration.startPulse();
+        }
     }
 
-    // 2秒延时后开始震动模式
-    if (millis() - vibrationDelayStart >= 2000 && !vibrationPatternActive) {
-        vibrationPatternActive = true;
-        vibration.setDuration(500);
-        vibration.start();
-        logTFEvent(F("EVENT:vibration_start"));
-    }
+    // 更新两个震动模块
+    vibration.update();
+    vibration2.update();
 }
 
 // ============================================================
@@ -388,10 +445,10 @@ void logSensorData() {
         (int)flex.getDetailedState(),
         pressure.getRaw(),
         pressure.isPressed(),
-        enableFlexPneumatic,
-        enableVibration,
-        isInflating,
-        inflateTriggered,
+        enablePalmPneumatic,
+        enableForearmPneumatic,
+        pneumatic.getState() == PNEUMATIC_INFLATING || pneumatic.getState() == PNEUMATIC_HOLDING,
+        pneumatic2.isActive(),
         vibration.isActive()
     );
 }
@@ -402,8 +459,13 @@ void logSensorData() {
 void setup() {
     Serial.begin(115200);
 
-    pneumatic.init(PUMP_PIN, VALVE_PIN);
+    pneumatic.init(PALM_PUMP_PIN, PALM_VALVE_PIN);
+    pneumatic2.init(FOREARM_PUMP_PIN, FOREARM_VALVE_PIN);
     vibration.init(MOTOR_PIN);
+    vibration2.init(MOTOR2_PIN);
+    // 再次确保关闭震动（调用类方法）
+    vibration.stop();
+    vibration2.stop();
     flex.init();
     pressure.init();
 
@@ -439,7 +501,8 @@ void setup() {
 
     Serial.println(F("=== System Ready ==="));
     Serial.println(F("Two IMUs share I2C bus: IMU1=0x68, IMU2=0x69"));
-    Serial.println(F("Combined posture uses both IMUs with stable switching."));
+    Serial.println(F("Palm pneumatic: pressure press -> inflate"));
+    Serial.println(F("Forearm pneumatic: IMU half raise -> inflate 9s"));
     Serial.println(F("Use command i to inspect both IMUs, o to toggle streaming."));
     Serial.println(F("h -> View command help"));
 }
@@ -449,9 +512,9 @@ void loop() {
     updateIMUs();             // 传感器层：双IMU更新
     updateFlex();             // 传感器层
     pressure.update();        // 传感器层
-    controlPneumatic();       // 联动层
-    resetPneumaticIfNeeded(); // 联动层
+    controlPalmPneumatic();  // 联动层：手掌气动
+    controlForearmPneumatic(); // 联动层：小臂气动
     controlVibration();       // 联动层：震动控制
-    vibration.update();       // 震动计时控制
+    vibration2.update();      // D10震动计时控制
     logSensorData();          // 日志层
 }
