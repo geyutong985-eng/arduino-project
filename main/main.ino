@@ -82,6 +82,33 @@ void logTFEvent(const __FlashStringHelper *eventText) {
     tfLogger.appendEvent(millis(), eventText);
 }
 
+// ===== 打印内存情况 =====
+void printMemoryInfo() {
+    extern int __heap_start;
+    extern int *__brkval;
+    int freeMemory;
+    if ((int)__brkval == 0) {
+        freeMemory = ((int)&freeMemory) - ((int)&__heap_start);
+    } else {
+        freeMemory = ((int)&freeMemory) - ((int)__brkval);
+    }
+
+    Serial.print(F("[MEMORY] Free RAM: "));
+    Serial.print(freeMemory);
+    Serial.println(F(" bytes"));
+
+    // 静态对象内存估算
+    size_t staticSize =
+        sizeof(ActuatorPneumatic) + sizeof(ActuatorPneumatic2) +
+        sizeof(ActuatorVibration) * 2 + sizeof(SensorIMU) * 2 +
+        sizeof(DualIMUPostureClassifier) + sizeof(SensorFlex) +
+        sizeof(SensorPressure) + sizeof(SensorTF);
+
+    Serial.print(F("[MEMORY] Static objects: ~"));
+    Serial.print(staticSize);
+    Serial.println(F(" bytes"));
+}
+
 // ===== 打印双IMU数据 =====
 void printDualIMUData() {
     imuUpper.printLabeledData();
@@ -218,6 +245,7 @@ void handleCommand() {
             Serial.println(F("r -> reset flex calibration"));
             Serial.println(F("i -> print both IMUs once"));
             Serial.println(F("o -> toggle periodic dual-IMU output"));
+            Serial.println(F("z -> I2C scan"));
             Serial.println(F("t -> test pneumatic"));
             Serial.println(F("v -> test pressure sensor"));
             Serial.println(F("w -> test vibration motor"));
@@ -229,6 +257,21 @@ void handleCommand() {
             Serial.println(F("m -> toggle TF logging"));
             Serial.println(F("l -> show TF logger status"));
             Serial.println(F("h -> help"));
+            break;
+
+        case 'z':
+            Serial.println(F("===== I2C Scan ====="));
+            Wire.begin();
+            Wire.setClock(100000);
+            for (uint8_t addr = 1; addr < 128; addr++) {
+                Wire.beginTransmission(addr);
+                if (Wire.endTransmission() == 0) {
+                    Serial.print(F("Found: 0x"));
+                    Serial.println(addr, HEX);
+                    delay(50);
+                }
+            }
+            Serial.println(F("Scan done"));
             break;
     }
 }
@@ -458,25 +501,32 @@ void logSensorData() {
 // ============================================================
 void setup() {
     Serial.begin(115200);
-
+    delay(10);
     pneumatic.init(PALM_PUMP_PIN, PALM_VALVE_PIN);
+    delay(10);
     pneumatic2.init(FOREARM_PUMP_PIN, FOREARM_VALVE_PIN);
+    delay(10);
     vibration.init(MOTOR_PIN);
+    delay(10);
     vibration2.init(MOTOR2_PIN);
+    delay(10);
     // 再次确保关闭震动（调用类方法）
     vibration.stop();
     vibration2.stop();
+    delay(10);
     flex.init();
+    delay(10);
     pressure.init();
-
+    delay(10);
     // 配置姿态分类器
     postureClassifier.setStableThreshold(3);
     postureClassifier.setSwitchMargin(0.08f);
-
+    delay(10);
     // 初始化双IMU
     bool imu1Ok = imuUpper.begin();
+    delay(10);
     bool imu2Ok = imuLower.begin();
-
+    delay(10);
     if (imu1Ok) {
         Serial.println(F("[IMU1] init OK at 0x68"));
     } else {
@@ -490,16 +540,17 @@ void setup() {
     }
 
     // 初始化TF卡
-    if (!tfLogger.begin(TF_CS_PIN, "imu_log.txt")) {
-        Serial.println(F("[TF] init failed, logging disabled"));
-        enableTFLogging = false;
-    } else {
-        Serial.print(F("[TF] logging to "));
-        Serial.println(tfLogger.getFileName());
-        logTFEvent(F("EVENT:system_start_dual_imu"));
-    }
+    // if (!tfLogger.begin(TF_CS_PIN, "imu_log.txt")) {
+    //     Serial.println(F("[TF] init failed, logging disabled"));
+    //     enableTFLogging = false;
+    // } else {
+    //     Serial.print(F("[TF] logging to "));
+    //     Serial.println(tfLogger.getFileName());
+    //     logTFEvent(F("EVENT:system_start_dual_imu"));
+    // }
 
     Serial.println(F("=== System Ready ==="));
+    printMemoryInfo();
     Serial.println(F("Two IMUs share I2C bus: IMU1=0x68, IMU2=0x69"));
     Serial.println(F("Palm pneumatic: pressure press -> inflate"));
     Serial.println(F("Forearm pneumatic: IMU half raise -> inflate 9s"));
@@ -508,13 +559,22 @@ void setup() {
 }
 
 void loop() {
-    handleCommand();          // 命令层
+    // handleCommand();          // 命令层
+    Serial.println("111");
     updateIMUs();             // 传感器层：双IMU更新
+    delay(100);
     updateFlex();             // 传感器层
+    delay(100);
     pressure.update();        // 传感器层
+    delay(100);
     controlPalmPneumatic();  // 联动层：手掌气动
+    delay(100);
     controlForearmPneumatic(); // 联动层：小臂气动
+    delay(100);
     controlVibration();       // 联动层：震动控制
+    delay(100);
     vibration2.update();      // D10震动计时控制
+    delay(100);
     logSensorData();          // 日志层
+    delay(100);
 }
