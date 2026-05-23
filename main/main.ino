@@ -1,4 +1,4 @@
-// 主循环 - 分层架构（双IMU + 双气动 + TF卡）
+// 主循环 - 分层架构（双IMU + 双气动）
 // 命令层 → 传感器层 → 联动层 → 硬件层
 
 #include "ActuatorPneumatic.h"
@@ -7,19 +7,21 @@
 #include "SensorIMU.h"
 #include "SensorFlex.h"
 #include "SensorPressure.h"
-#include "SensorTF.h"
 #include "PneumaticState.h"
 
-// ===== 引脚定义 =====
-#define PALM_PUMP_PIN 8
-#define PALM_VALVE_PIN 9
-#define FOREARM_PUMP_PIN 2
-#define FOREARM_VALVE_PIN 3
-#define MOTOR_PIN 6
-#define MOTOR2_PIN 10
-const int FLEX_PIN = A3;
-const int PRESSURE_PIN = A0;
-const int TF_CS_PIN = 10;
+// ===== ESP32 引脚定义 =====
+#define PALM_PUMP_PIN 18
+#define PALM_VALVE_PIN 19
+#define FOREARM_PUMP_PIN 4
+#define FOREARM_VALVE_PIN 5
+#define MOTOR_PIN 2
+#define MOTOR2_PIN 15
+const int FLEX_PIN = 34;
+const int PRESSURE_PIN = 35;
+
+// ===== IMU I2C 引脚 (固定) =====
+const int IMU_SDA_PIN = 21;
+const int IMU_SCL_PIN = 22;
 
 // ===== IMU地址 =====
 const uint8_t IMU1_ADDR = 0x68;
@@ -27,30 +29,26 @@ const uint8_t IMU2_ADDR = 0x69;
 
 // ===== 打印间隔 =====
 const unsigned long PRINT_INTERVAL = 300;
-const unsigned long LOG_INTERVAL = 100;
 
 // ===== 模块实例 =====
 ActuatorPneumatic pneumatic;      // 手掌气动
 ActuatorPneumatic2 pneumatic2;  // 小臂气动
-ActuatorVibration vibration;    // D6 震动
-ActuatorVibration vibration2;  // D10 震动
+ActuatorVibration vibration;    // GPIO2 震动
+ActuatorVibration vibration2;  // GPIO15 震动
 SensorIMU imuUpper(IMU1_ADDR, "IMU1");   // 上臂
 SensorIMU imuLower(IMU2_ADDR, "IMU2");   // 前臂
 DualIMUPostureClassifier postureClassifier;
 SensorFlex flex(FLEX_PIN);
 SensorPressure pressure(PRESSURE_PIN);
-SensorTF tfLogger;
 
 // ===== 配置开关 =====
 bool enablePalmPneumatic = true;
 bool enableForearmPneumatic = true;
 bool enableVibration = true;
-bool enableTFLogging = true;
 bool enableDualIMUPrint = true;
 
 // ===== 时间变量 =====
 unsigned long lastIMUPrintTime = 0;
-unsigned long lastLogTime = 0;
 
 // ===== 姿态状态 =====
 Posture combinedPosture = POSTURE_UNKNOWN;
@@ -74,13 +72,8 @@ static bool pickingTriggered = false;
 // 通用
 static bool lastPressureState = false;
 
-// ===== TF日志事件 =====
-void logTFEvent(const __FlashStringHelper *eventText) {
-    if (!enableTFLogging || !tfLogger.isReady()) {
-        return;
-    }
-    tfLogger.appendEvent(millis(), eventText);
-}
+// 空函数，TF卡已移除
+void logTFEvent(const __FlashStringHelper *eventText) {}
 
 // ===== 打印内存情况 =====
 void printMemoryInfo() {
@@ -102,7 +95,7 @@ void printMemoryInfo() {
         sizeof(ActuatorPneumatic) + sizeof(ActuatorPneumatic2) +
         sizeof(ActuatorVibration) * 2 + sizeof(SensorIMU) * 2 +
         sizeof(DualIMUPostureClassifier) + sizeof(SensorFlex) +
-        sizeof(SensorPressure) + sizeof(SensorTF);
+        sizeof(SensorPressure);
 
     Serial.print(F("[MEMORY] Static objects: ~"));
     Serial.print(staticSize);
@@ -221,22 +214,6 @@ void handleCommand() {
             logTFEvent(F("EVENT:palm_pneumatic_disabled"));
             break;
 
-        case 'm':
-            enableTFLogging = !enableTFLogging;
-            Serial.print(F("[Config] TF logging "));
-            Serial.println(enableTFLogging ? F("enabled") : F("disabled"));
-            if (enableTFLogging) {
-                logTFEvent(F("EVENT:tf_logging_enabled"));
-            }
-            break;
-
-        case 'l':
-            Serial.print(F("[TF] ready="));
-            Serial.print(tfLogger.isReady() ? F("yes") : F("no"));
-            Serial.print(F(", file="));
-            Serial.println(tfLogger.getFileName());
-            break;
-
         case 'h':
             Serial.println(F("===== Command Help ====="));
             Serial.println(F("f -> calibrate flex flat"));
@@ -254,14 +231,12 @@ void handleCommand() {
             Serial.println(F("u -> test forearm pneumatic"));
             Serial.println(F("y -> enable forearm pneumatic"));
             Serial.println(F("n -> disable forearm pneumatic"));
-            Serial.println(F("m -> toggle TF logging"));
-            Serial.println(F("l -> show TF logger status"));
             Serial.println(F("h -> help"));
             break;
 
         case 'z':
             Serial.println(F("===== I2C Scan ====="));
-            Wire.begin();
+            Wire.begin(IMU_SDA_PIN, IMU_SCL_PIN);
             Wire.setClock(100000);
             for (uint8_t addr = 1; addr < 128; addr++) {
                 Wire.beginTransmission(addr);
@@ -452,45 +427,8 @@ void controlVibration() {
     vibration2.update();
 }
 
-// ============================================================
-// 日志层：logSensorData()
-// ============================================================
-void logSensorData() {
-    if (!enableTFLogging || !tfLogger.isReady()) {
-        return;
-    }
-
-    unsigned long now = millis();
-    if (now - lastLogTime < LOG_INTERVAL) {
-        return;
-    }
-    lastLogTime = now;
-
-    tfLogger.appendSample(
-        now,
-        imuUpper.getAccX(),
-        imuUpper.getAccY(),
-        imuUpper.getAccZ(),
-        imuUpper.getGyroX(),
-        imuUpper.getGyroY(),
-        imuUpper.getGyroZ(),
-        (int)imuUpper.getArmState(),
-        imuLower.getAccX(),
-        imuLower.getAccY(),
-        imuLower.getAccZ(),
-        imuLower.getGyroX(),
-        imuLower.getGyroY(),
-        imuLower.getGyroZ(),
-        (int)imuLower.getArmState(),
-        (int)combinedPosture,
-        flex.getRaw(),
-        flex.getAngle(),
-        (int)flex.getDetailedState(),
-        pressure.getRaw(),
-        pressure.isPressed(),
-        enablePalmPneumatic,
-        enableForearmPneumatic,
-        pneumatic.getState() == PNEUMATIC_INFLATING || pneumatic.getState() == PNEUMATIC_HOLDING,
+// 空函数，TF卡已移除
+void logSensorData() {}
         pneumatic2.isActive(),
         vibration.isActive()
     );
@@ -501,6 +439,12 @@ void logSensorData() {
 // ============================================================
 void setup() {
     Serial.begin(115200);
+
+    // ESP32 I2C 初始化 (指定 SDA/SCL 引脚)
+    Wire.begin(IMU_SDA_PIN, IMU_SCL_PIN);
+    Wire.setClock(100000);
+    delay(100);
+
     delay(10);
     pneumatic.init(PALM_PUMP_PIN, PALM_VALVE_PIN);
     delay(10);
@@ -559,22 +503,12 @@ void setup() {
 }
 
 void loop() {
-    // handleCommand();          // 命令层
-    Serial.println("111");
-    updateIMUs();             // 传感器层：双IMU更新
-    delay(100);
-    updateFlex();             // 传感器层
-    delay(100);
-    pressure.update();        // 传感器层
-    delay(100);
-    controlPalmPneumatic();  // 联动层：手掌气动
-    delay(100);
-    controlForearmPneumatic(); // 联动层：小臂气动
-    delay(100);
-    controlVibration();       // 联动层：震动控制
-    delay(100);
-    vibration2.update();      // D10震动计时控制
-    delay(100);
-    logSensorData();          // 日志层
-    delay(100);
+    handleCommand();              // 命令层
+    updateIMUs();                // 传感器层：双IMU更新
+    updateFlex();                // 传感器层
+    pressure.update();            // 传感器层
+    controlPalmPneumatic();       // 联动层：手掌气动
+    controlForearmPneumatic();    // 联动层：小臂气动
+    controlVibration();          // 联动层：震动控制
+    vibration2.update();        // 震动计时控制
 }

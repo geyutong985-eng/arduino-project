@@ -1,12 +1,19 @@
 // 震动马达控制
 // 功能：控制震动马达，给用户触觉反馈
 // 支持普通震动和脉冲模式（1秒开-2秒停循环）
-// 引脚：D6 或 D10
+// 引脚：ESP32 GPIO
 
 #ifndef ACTUATOR_VIBRATION_H
 #define ACTUATOR_VIBRATION_H
 
 #include <Arduino.h>
+
+// 检测是否为 ESP32 平台
+#if defined(ESP32)
+#define IS_ESP32 1
+#else
+#define IS_ESP32 0
+#endif
 
 enum VibrationState {
     VIBRATION_IDLE,     // 空闲
@@ -29,15 +36,30 @@ private:
     unsigned long lastPulseToggle;
     bool pulseStateOn;
 
+    // ESP32 LEDC 通道
+#if IS_ESP32
+    int ledcChannel;
+    static int nextLedcChannel;
+#endif
+
 public:
     void init(int pin) {
         motorPin = pin;
+#if IS_ESP32
+        // 分配 LEDC 通道
+        ledcChannel = nextLedcChannel++;
+        // 配置 LEDC 通道: 1kHz, 8-bit resolution
+        ledcSetup(ledcChannel, 1000, 8);
+        // 绑定引脚
+        ledcAttachPin(motorPin, ledcChannel);
+        ledcWrite(ledcChannel, 0);
+#else
         pinMode(motorPin, OUTPUT);
-        digitalWrite(motorPin, LOW);  // 先设置为 LOW
+        digitalWrite(motorPin, LOW);
+#endif
         duration = 2000;  // 默认2秒
         strength = 80;    // 默认强度 (0-255)
 
-        // 确保初始化为关闭状态
         state = VIBRATION_IDLE;
         pulseModeActive = false;
         pulseStateOn = false;
@@ -51,19 +73,32 @@ public:
         strength = constrain(s, 0, 255);
     }
 
+    // 写入 PWM（ESP32 用 LEDC，UNO 用 analogWrite）
+    void writePwm(int value) {
+#if IS_ESP32
+        ledcWrite(ledcChannel, value);
+#else
+        analogWrite(motorPin, value);
+#endif
+    }
+
     // 普通震动模式
     void start() {
         if (state == VIBRATION_ON || state == VIBRATION_PULSE_ON) return;
         pulseModeActive = false;
         state = VIBRATION_ON;
         startTime = millis();
-        analogWrite(motorPin, strength);
+        writePwm(strength);
     }
 
     void stop() {
         state = VIBRATION_IDLE;
         pulseModeActive = false;
+#if IS_ESP32
+        ledcWrite(ledcChannel, 0);
+#else
         digitalWrite(motorPin, LOW);
+#endif
     }
 
     void update() {
@@ -85,7 +120,7 @@ public:
         pulseCycleStart = millis();
         lastPulseToggle = millis();
         state = VIBRATION_PULSE_ON;
-        analogWrite(motorPin, strength);
+        writePwm(strength);
     }
 
     // 更新脉冲模式
@@ -98,7 +133,11 @@ public:
                 pulseStateOn = false;
                 lastPulseToggle = now;
                 state = VIBRATION_PULSE_OFF;
+#if IS_ESP32
+                ledcWrite(ledcChannel, 0);
+#else
                 digitalWrite(motorPin, LOW);
+#endif
             }
         } else {
             // 当前是关，检查是否需要打开（2秒后）
@@ -106,7 +145,7 @@ public:
                 pulseStateOn = true;
                 lastPulseToggle = now;
                 state = VIBRATION_PULSE_ON;
-                analogWrite(motorPin, strength);
+                writePwm(strength);
             }
         }
     }
@@ -125,5 +164,10 @@ public:
         return pulseModeActive;
     }
 };
+
+// ESP32 LEDC 通道计数器
+#if IS_ESP32
+int ActuatorVibration::nextLedcChannel = 0;
+#endif
 
 #endif
