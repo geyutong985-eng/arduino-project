@@ -28,8 +28,6 @@
 
 - `main.ino` - 主循环
 - `SensorIMU.h/cpp` - IMU姿态传感器读取
-- `SensorEMG.h/cpp` - EMG肌电传感器读取
-- `SensorPPG.h/cpp` - PPG脉搏传感器读取
 - `SensorFlex.h/cpp` - 弯曲传感器读取
 - `SensorPressure.h/cpp` - 压力传感器读取
 - `SensorVibrate.h/cpp` - 震动马达控制
