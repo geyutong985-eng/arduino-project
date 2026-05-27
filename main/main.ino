@@ -9,6 +9,10 @@
 #include "SensorPressure.h"
 #include "PneumaticState.h"
 
+#if defined(ESP32)
+#include <Esp.h>
+#endif
+
 // ===== ESP32 引脚定义 =====
 #define PALM_PUMP_PIN 18
 #define PALM_VALVE_PIN 19
@@ -72,23 +76,18 @@ static bool pickingTriggered = false;
 // 通用
 static bool lastPressureState = false;
 
-// 空函数，TF卡已移除
+// TF卡已移除，保留空函数兼容现有事件调用
 void logTFEvent(const __FlashStringHelper *eventText) {}
 
-// ===== 打印内存情况 =====
+// ===== 打印 ESP32 内存情况 =====
 void printMemoryInfo() {
-    extern int __heap_start;
-    extern int *__brkval;
-    int freeMemory;
-    if ((int)__brkval == 0) {
-        freeMemory = ((int)&freeMemory) - ((int)&__heap_start);
-    } else {
-        freeMemory = ((int)&freeMemory) - ((int)__brkval);
-    }
-
-    Serial.print(F("[MEMORY] Free RAM: "));
-    Serial.print(freeMemory);
+#if defined(ESP32)
+    Serial.print(F("[MEMORY] Free heap: "));
+    Serial.print(ESP.getFreeHeap());
     Serial.println(F(" bytes"));
+#else
+    Serial.println(F("[MEMORY] ESP32 heap info unavailable on this board"));
+#endif
 
     // 静态对象内存估算
     size_t staticSize =
@@ -427,13 +426,6 @@ void controlVibration() {
     vibration2.update();
 }
 
-// 空函数，TF卡已移除
-void logSensorData() {}
-        pneumatic2.isActive(),
-        vibration.isActive()
-    );
-}
-
 // ============================================================
 // 主程序
 // ============================================================
@@ -482,16 +474,6 @@ void setup() {
     } else {
         Serial.println(F("[IMU2] init failed at 0x69"));
     }
-
-    // 初始化TF卡
-    // if (!tfLogger.begin(TF_CS_PIN, "imu_log.txt")) {
-    //     Serial.println(F("[TF] init failed, logging disabled"));
-    //     enableTFLogging = false;
-    // } else {
-    //     Serial.print(F("[TF] logging to "));
-    //     Serial.println(tfLogger.getFileName());
-    //     logTFEvent(F("EVENT:system_start_dual_imu"));
-    // }
 
     Serial.println(F("=== System Ready ==="));
     printMemoryInfo();
