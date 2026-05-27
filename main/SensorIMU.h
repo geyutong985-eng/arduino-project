@@ -70,12 +70,6 @@ private:
     int16_t gyroZRaw;
     int16_t tempRaw;
 
-    Posture currentPosture;
-    int stableCountThreshold;
-    int naturalCount;
-    int halfCount;
-    int pickCount;
-
     void writeRegister(uint8_t reg, uint8_t data) {
         Wire.beginTransmission(imuAddr);
         Wire.write(reg);
@@ -101,55 +95,11 @@ private:
         return true;
     }
 
-    bool isNatural(float ax, float ay, float az) {
-        return (ax < -0.20f && ay < 0.45f && fabs(az) < 0.30f);
-    }
-
-    bool isHalfRaised(float ax, float ay, float az) {
-        return (ax > 0.20f && ax < 0.75f && ay > 0.60f && az > 0.05f);
-    }
-
-    bool isPickPose(float ax, float ay, float az) {
-        return (ax > 0.78f && ay > 0.15f && ay < 0.60f && fabs(az) < 0.20f);
-    }
-
-    void updatePostureState(float ax, float ay, float az) {
-        bool natural = isNatural(ax, ay, az);
-        bool half = isHalfRaised(ax, ay, az);
-        bool pick = isPickPose(ax, ay, az);
-
-        naturalCount = natural ? naturalCount + 1 : 0;
-        halfCount = half ? halfCount + 1 : 0;
-        pickCount = pick ? pickCount + 1 : 0;
-
-        if (natural && naturalCount >= stableCountThreshold && currentPosture != POSTURE_NATURAL_DOWN) {
-            currentPosture = POSTURE_NATURAL_DOWN;
-            naturalCount = 0;
-            Serial.print('[');
-            Serial.print(imuName);
-            Serial.println(F("] Posture: NATURAL_DOWN"));
-        } else if (half && halfCount >= stableCountThreshold && currentPosture != POSTURE_HALF_RAISED) {
-            currentPosture = POSTURE_HALF_RAISED;
-            halfCount = 0;
-            Serial.print('[');
-            Serial.print(imuName);
-            Serial.println(F("] Posture: HALF_RAISED"));
-        } else if (pick && pickCount >= stableCountThreshold && currentPosture != POSTURE_PICKING) {
-            currentPosture = POSTURE_PICKING;
-            pickCount = 0;
-            Serial.print('[');
-            Serial.print(imuName);
-            Serial.println(F("] Posture: PICKING"));
-        }
-    }
-
 public:
     SensorIMU(uint8_t address = 0x68, const char* name = "IMU")
         : imuAddr(address), imuName(name), online(false),
           accXRaw(0), accYRaw(0), accZRaw(0),
-          gyroXRaw(0), gyroYRaw(0), gyroZRaw(0), tempRaw(0),
-          currentPosture(POSTURE_UNKNOWN), stableCountThreshold(2),
-          naturalCount(0), halfCount(0), pickCount(0) {}
+          gyroXRaw(0), gyroYRaw(0), gyroZRaw(0), tempRaw(0) {}
 
     bool begin() {
         if (!wireStarted) {
@@ -190,9 +140,7 @@ public:
     }
 
     void update() {
-        if (read()) {
-            updatePostureState(getAccX(), getAccY(), getAccZ());
-        }
+        read();
     }
 
     float getAccX() const { return accXRaw / 16384.0f; }
@@ -205,14 +153,9 @@ public:
 
     float getTemperature() const { return tempRaw / 340.0f + 36.53f; }
 
-    Posture getPosture() const { return currentPosture; }
-    Posture getArmState() const { return currentPosture; }
-
     uint8_t getAddress() const { return imuAddr; }
     const char* getName() const { return imuName; }
     bool isOnline() const { return online; }
-
-    void setStableCount(int count) { stableCountThreshold = count; }
 
     void test() {
         Serial.print(F("ACC: "));
@@ -240,12 +183,6 @@ public:
         Serial.println(getGyroZ(), 3);
     }
 
-    void printArmState() {
-        Serial.print('[');
-        Serial.print(imuName);
-        Serial.print(F("] ArmState: "));
-        Serial.println(postureToString(currentPosture));
-    }
 };
 
 class DualIMUPostureClassifier {

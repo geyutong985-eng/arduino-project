@@ -32,7 +32,7 @@ const uint8_t IMU1_ADDR = 0x68;
 const uint8_t IMU2_ADDR = 0x69;
 
 // ===== 打印间隔 =====
-const unsigned long PRINT_INTERVAL = 300;
+const unsigned long PRINT_INTERVAL = 500;
 
 // ===== 模块实例 =====
 ActuatorPneumatic pneumatic;      // 手掌气动
@@ -105,8 +105,6 @@ void printMemoryInfo() {
 void printDualIMUData() {
     imuUpper.printLabeledData();
     imuLower.printLabeledData();
-    imuUpper.printArmState();
-    imuLower.printArmState();
     Serial.print(F("[COMBINED] Posture: "));
     Serial.print(postureToString(combinedPosture));
     Serial.print(F(" | Score: "));
