@@ -1,7 +1,7 @@
 #include "SensorPressure.h"
 
 SensorPressure::SensorPressure(int pin) : pressurePin(pin), bufferIndex(0),
-    bufferFilled(false), filteredValue(0), pressThreshold(600), lastPrintTime(0) {}
+    bufferFilled(false), filteredValue(0), pressThreshold(150), lastPrintTime(0) {}
 
 void SensorPressure::init() {
     pinMode(pressurePin, INPUT);
@@ -49,7 +49,7 @@ int SensorPressure::getUnfilteredRaw() const {
 }
 
 bool SensorPressure::isPressed() const {
-    return filteredValue < pressThreshold;
+    return filteredValue >= pressThreshold;
 }
 
 void SensorPressure::setThreshold(int threshold) {

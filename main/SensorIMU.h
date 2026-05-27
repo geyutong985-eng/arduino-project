@@ -198,6 +198,7 @@ private:
     };
 
     static const PosePrototype prototypes[3];
+    static constexpr float MATCH_SCORE_THRESHOLD = 2.0f;
 
     Posture currentPosture;
     Posture candidatePosture;
@@ -251,7 +252,7 @@ public:
         }
 
         // 分数太高说明匹配不好，返回UNKNOWN
-        if (bestScore > 1.0f) {
+        if (bestScore > MATCH_SCORE_THRESHOLD) {
             currentPosture = POSTURE_UNKNOWN;
             currentScore = bestScore;
             return currentPosture;
