@@ -43,6 +43,29 @@ void SensorFlex::calibrateBent() {
     Serial.println(isCalibrationValid() ? "Yes" : "No");
 }
 
+void SensorFlex::applyCalibration(int flatRaw, int bentRaw) {
+    flatValue = flatRaw;
+    bentValue = bentRaw;
+    flatCalibrated = true;
+    bentCalibrated = true;
+    smoothRaw = -1;
+    bentTriggered = false;
+    detailedState = FLEX_DETAILED_FLAT;
+    candidateState = FLEX_DETAILED_FLAT;
+    candidateCount = 0;
+    currentRaw = 0;
+    currentAngle = 0.0;
+
+    Serial.print(">> Flex calibration loaded: Flat = ");
+    Serial.print(flatValue);
+    Serial.print(" | Bent = ");
+    Serial.print(bentValue);
+    Serial.print(" | Diff = ");
+    Serial.print(abs(flatValue - bentValue));
+    Serial.print(" | Valid: ");
+    Serial.println(isCalibrationValid() ? "Yes" : "No");
+}
+
 void SensorFlex::reset() {
     flatValue = bentValue = 0;
     flatCalibrated = bentCalibrated = false;

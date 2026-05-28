@@ -34,6 +34,7 @@ public:
     void init();
     void calibrateFlat();
     void calibrateBent();
+    void applyCalibration(int flatRaw, int bentRaw);
     void reset();
     void update();
 

@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <Wire.h>
+#include "IMUCalibrationData.h"
 
 #ifndef MPU6050_WHO_AM_I
 #define MPU6050_WHO_AM_I 0x75
@@ -195,10 +196,22 @@ private:
         float imu2Ax;
         float imu2Ay;
         float imu2Az;
+        float matchScoreThreshold;
+        float imu1AxLow;
+        float imu1AxHigh;
+        float imu1AyLow;
+        float imu1AyHigh;
+        float imu1AzLow;
+        float imu1AzHigh;
+        float imu2AxLow;
+        float imu2AxHigh;
+        float imu2AyLow;
+        float imu2AyHigh;
+        float imu2AzLow;
+        float imu2AzHigh;
     };
 
     static const PosePrototype prototypes[3];
-    static constexpr float MATCH_SCORE_THRESHOLD = 2.0f;
 
     Posture currentPosture;
     Posture candidatePosture;
@@ -211,6 +224,10 @@ private:
         return value * value;
     }
 
+    bool withinRange(float value, float low, float high) const {
+        return value >= low && value <= high;
+    }
+
     float scorePose(const PosePrototype &pose,
                     const SensorIMU &imu1,
                     const SensorIMU &imu2) const {
@@ -220,6 +237,17 @@ private:
                squared(imu2.getAccX() - pose.imu2Ax) +
                squared(imu2.getAccY() - pose.imu2Ay) +
                squared(imu2.getAccZ() - pose.imu2Az);
+    }
+
+    bool isWithinPoseRange(const PosePrototype &pose,
+                           const SensorIMU &imu1,
+                           const SensorIMU &imu2) const {
+        return withinRange(imu1.getAccX(), pose.imu1AxLow, pose.imu1AxHigh) &&
+               withinRange(imu1.getAccY(), pose.imu1AyLow, pose.imu1AyHigh) &&
+               withinRange(imu1.getAccZ(), pose.imu1AzLow, pose.imu1AzHigh) &&
+               withinRange(imu2.getAccX(), pose.imu2AxLow, pose.imu2AxHigh) &&
+               withinRange(imu2.getAccY(), pose.imu2AyLow, pose.imu2AyHigh) &&
+               withinRange(imu2.getAccZ(), pose.imu2AzLow, pose.imu2AzHigh);
     }
 
 public:
@@ -245,14 +273,16 @@ public:
 
         for (uint8_t i = 0; i < 3; ++i) {
             float score = scorePose(prototypes[i], imu1, imu2);
-            if (score < bestScore) {
+            if (score <= prototypes[i].matchScoreThreshold &&
+                isWithinPoseRange(prototypes[i], imu1, imu2) &&
+                score < bestScore) {
                 bestScore = score;
                 bestPosture = prototypes[i].posture;
             }
         }
 
-        // 分数太高说明匹配不好，返回UNKNOWN
-        if (bestScore > MATCH_SCORE_THRESHOLD) {
+        // No calibrated pose matched both its range and score threshold.
+        if (bestPosture == POSTURE_UNKNOWN) {
             currentPosture = POSTURE_UNKNOWN;
             currentScore = bestScore;
             return currentPosture;
@@ -307,9 +337,36 @@ public:
 bool SensorIMU::wireStarted = false;
 
 const DualIMUPostureClassifier::PosePrototype DualIMUPostureClassifier::prototypes[3] = {
-    {POSTURE_NATURAL_DOWN, 0.133f, 0.189f, -0.996f, 0.903f, 0.247f, -0.513f},
-    {POSTURE_HALF_RAISED,  0.781f, 0.323f,  0.557f, 0.220f, -0.797f, 0.596f},
-    {POSTURE_PICKING,      0.914f, 0.304f, -0.344f, -0.730f, -0.608f, -0.120f}
+    {POSTURE_NATURAL_DOWN,
+     IMU_NATURAL_DOWN_IMU1_AX, IMU_NATURAL_DOWN_IMU1_AY, IMU_NATURAL_DOWN_IMU1_AZ,
+     IMU_NATURAL_DOWN_IMU2_AX, IMU_NATURAL_DOWN_IMU2_AY, IMU_NATURAL_DOWN_IMU2_AZ,
+     IMU_NATURAL_DOWN_MATCH_SCORE_THRESHOLD,
+     IMU_NATURAL_DOWN_IMU1_AX_LOW, IMU_NATURAL_DOWN_IMU1_AX_HIGH,
+     IMU_NATURAL_DOWN_IMU1_AY_LOW, IMU_NATURAL_DOWN_IMU1_AY_HIGH,
+     IMU_NATURAL_DOWN_IMU1_AZ_LOW, IMU_NATURAL_DOWN_IMU1_AZ_HIGH,
+     IMU_NATURAL_DOWN_IMU2_AX_LOW, IMU_NATURAL_DOWN_IMU2_AX_HIGH,
+     IMU_NATURAL_DOWN_IMU2_AY_LOW, IMU_NATURAL_DOWN_IMU2_AY_HIGH,
+     IMU_NATURAL_DOWN_IMU2_AZ_LOW, IMU_NATURAL_DOWN_IMU2_AZ_HIGH},
+    {POSTURE_HALF_RAISED,
+     IMU_HALF_RAISED_IMU1_AX, IMU_HALF_RAISED_IMU1_AY, IMU_HALF_RAISED_IMU1_AZ,
+     IMU_HALF_RAISED_IMU2_AX, IMU_HALF_RAISED_IMU2_AY, IMU_HALF_RAISED_IMU2_AZ,
+     IMU_HALF_RAISED_MATCH_SCORE_THRESHOLD,
+     IMU_HALF_RAISED_IMU1_AX_LOW, IMU_HALF_RAISED_IMU1_AX_HIGH,
+     IMU_HALF_RAISED_IMU1_AY_LOW, IMU_HALF_RAISED_IMU1_AY_HIGH,
+     IMU_HALF_RAISED_IMU1_AZ_LOW, IMU_HALF_RAISED_IMU1_AZ_HIGH,
+     IMU_HALF_RAISED_IMU2_AX_LOW, IMU_HALF_RAISED_IMU2_AX_HIGH,
+     IMU_HALF_RAISED_IMU2_AY_LOW, IMU_HALF_RAISED_IMU2_AY_HIGH,
+     IMU_HALF_RAISED_IMU2_AZ_LOW, IMU_HALF_RAISED_IMU2_AZ_HIGH},
+    {POSTURE_PICKING,
+     IMU_PICKING_IMU1_AX, IMU_PICKING_IMU1_AY, IMU_PICKING_IMU1_AZ,
+     IMU_PICKING_IMU2_AX, IMU_PICKING_IMU2_AY, IMU_PICKING_IMU2_AZ,
+     IMU_PICKING_MATCH_SCORE_THRESHOLD,
+     IMU_PICKING_IMU1_AX_LOW, IMU_PICKING_IMU1_AX_HIGH,
+     IMU_PICKING_IMU1_AY_LOW, IMU_PICKING_IMU1_AY_HIGH,
+     IMU_PICKING_IMU1_AZ_LOW, IMU_PICKING_IMU1_AZ_HIGH,
+     IMU_PICKING_IMU2_AX_LOW, IMU_PICKING_IMU2_AX_HIGH,
+     IMU_PICKING_IMU2_AY_LOW, IMU_PICKING_IMU2_AY_HIGH,
+     IMU_PICKING_IMU2_AZ_LOW, IMU_PICKING_IMU2_AZ_HIGH}
 };
 
 #endif
