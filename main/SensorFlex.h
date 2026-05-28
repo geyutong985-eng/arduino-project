@@ -8,9 +8,12 @@ const int FLEX_FILTER_SAMPLES = 9;          // 滤波采样次数
 const int FLEX_MIN_DIFF = 50;               // 最小校准差值
 const float FLEX_ANGLE_THRESHOLD = 45.0;     // 弯曲阈值
 const float FLEX_HYSTERESIS = 2.0;          // 迟滞范围
+const float FLEX_BENT_ON_ANGLE = 55.0;       // 进入弯曲状态的角度
+const float FLEX_BENT_OFF_ANGLE = 35.0;      // 退出弯曲状态的角度
+const int FLEX_STABLE_SAMPLES = 3;           // 连续稳定次数
+const unsigned long FLEX_SAMPLE_INTERVAL = 50; // 状态采样间隔(ms)
 const unsigned long FLEX_PRINT_INTERVAL = 500; // 输出间隔(ms)
 const int FLEX_RANGE_MARGIN = 50;           // 状态判定范围边界
-const int FLEX_FLAT_MIN_RAW = 0;            // 伸直最小阈值
 
 // ========== 详细状态枚举（两种状态）==========
 enum FlexDetailedState {
@@ -52,7 +55,13 @@ private:
     bool flatCalibrated;
     bool bentCalibrated;
     bool bentTriggered;
+    FlexDetailedState detailedState;
+    FlexDetailedState candidateState;
+    int candidateCount;
+    int currentRaw;
+    float currentAngle;
     float smoothRaw;
+    unsigned long lastSampleTime;
     unsigned long lastPrintTime;
 
     int readMedianRaw(int samples);

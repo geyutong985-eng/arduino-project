@@ -253,10 +253,23 @@ void handleCommand() {
 // ============================================================
 void updateFlex() {
     if (!flex.isCalibrated()) {
-        static unsigned long lastReminder = 0;
-        if (millis() - lastReminder >= 3000) {
-            lastReminder = millis();
-            Serial.println(F(">> Please calibrate flex sensor: f then b"));
+        static unsigned long lastFlexPrint = 0;
+        if (millis() - lastFlexPrint >= FLEX_PRINT_INTERVAL) {
+            lastFlexPrint = millis();
+            Serial.print(F("[FLEX] Raw: "));
+            Serial.print(flex.getRaw());
+            Serial.println(F("  Calibrate: f=flat, b=bent"));
+        }
+        return;
+    }
+
+    if (!flex.isCalibrationValid()) {
+        static unsigned long lastFlexPrint = 0;
+        if (millis() - lastFlexPrint >= FLEX_PRINT_INTERVAL) {
+            lastFlexPrint = millis();
+            Serial.print(F("[FLEX] Raw: "));
+            Serial.print(flex.getRaw());
+            Serial.println(F("  Calibration invalid, recalibrate: f then b"));
         }
         return;
     }
@@ -309,7 +322,7 @@ void controlPalmPneumatic() {
 
 // ============================================================
 // 联动层：controlForearmPneumatic()
-// 小臂气动：IMU半抬 → 充气9秒 → 压力按下后松开放气
+// 小臂气动：IMU半抬 + Flex弯曲 → 充气 → 压力按下后松开放气
 // ============================================================
 void controlForearmPneumatic() {
     if (!enableForearmPneumatic) {
@@ -319,9 +332,12 @@ void controlForearmPneumatic() {
     ArmState imuState = combinedPosture;
     bool pressurePressed = pressure.isPressed();
     bool wasInflating = pneumatic2.isActive();
+    bool flexBent = flex.isCalibrated() &&
+                    flex.isCalibrationValid() &&
+                    flex.getDetailedState() == FLEX_DETAILED_BENT;
 
-    // IMU半抬 → 开始充气
-    if (imuState == ARM_STATE_HALF_RAISED && !wasInflating && !forearmInflateTriggered) {
+    // IMU半抬且Flex稳定弯曲 → 开始充气
+    if (imuState == ARM_STATE_HALF_RAISED && flexBent && !wasInflating && !forearmInflateTriggered) {
         pneumatic2.startInflate();
         forearmInflateTriggered = true;
         logTFEvent(F("EVENT:forearm_inflate_start"));

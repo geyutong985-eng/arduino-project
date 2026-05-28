@@ -2,7 +2,9 @@
 
 SensorFlex::SensorFlex(int pin) : flexPin(pin), flatValue(0), bentValue(0),
     flatCalibrated(false), bentCalibrated(false), bentTriggered(false),
-    smoothRaw(-1), lastPrintTime(0) {}
+    detailedState(FLEX_DETAILED_FLAT), candidateState(FLEX_DETAILED_FLAT),
+    candidateCount(0), currentRaw(0), currentAngle(0.0),
+    smoothRaw(-1), lastSampleTime(0), lastPrintTime(0) {}
 
 void SensorFlex::init() {
     pinMode(flexPin, INPUT);
@@ -14,6 +16,9 @@ void SensorFlex::calibrateFlat() {
     flatCalibrated = true;
     smoothRaw = -1;
     bentTriggered = false;
+    detailedState = FLEX_DETAILED_FLAT;
+    candidateState = FLEX_DETAILED_FLAT;
+    candidateCount = 0;
     Serial.println(">> 伸直校准完成");
     Serial.print("Flat = ");
     Serial.println(flatValue);
@@ -24,6 +29,9 @@ void SensorFlex::calibrateBent() {
     bentCalibrated = true;
     smoothRaw = -1;
     bentTriggered = false;
+    detailedState = FLEX_DETAILED_FLAT;
+    candidateState = FLEX_DETAILED_FLAT;
+    candidateCount = 0;
     Serial.println(">> 弯曲校准完成");
     Serial.print("Flat = ");
     Serial.print(flatValue);
@@ -40,6 +48,9 @@ void SensorFlex::reset() {
     flatCalibrated = bentCalibrated = false;
     smoothRaw = -1;
     bentTriggered = false;
+    detailedState = FLEX_DETAILED_FLAT;
+    candidateState = FLEX_DETAILED_FLAT;
+    candidateCount = 0;
     Serial.println(">> 已重置校准");
 }
 
@@ -48,42 +59,68 @@ void SensorFlex::update() {
     if (!isCalibrationValid()) return;
 
     unsigned long now = millis();
-    if (now - lastPrintTime < FLEX_PRINT_INTERVAL) return;
-    lastPrintTime = now;
+    if (now - lastSampleTime >= FLEX_SAMPLE_INTERVAL) {
+        lastSampleTime = now;
+        currentRaw = readStableRaw();
+        currentAngle = getAngle(currentRaw, flatValue, bentValue);
 
-    int raw = readStableRaw();
-    float norm = getNormalized(raw, flatValue, bentValue);
-    float angle = getAngle(raw, flatValue, bentValue);
+        FlexDetailedState measuredState = detailedState;
+        if (detailedState == FLEX_DETAILED_BENT) {
+            measuredState = currentAngle <= FLEX_BENT_OFF_ANGLE ? FLEX_DETAILED_FLAT : FLEX_DETAILED_BENT;
+        } else {
+            measuredState = currentAngle >= FLEX_BENT_ON_ANGLE ? FLEX_DETAILED_BENT : FLEX_DETAILED_FLAT;
+        }
 
-    // 伸直到位判断（之前是弯曲到位）
-    if (raw > FLEX_FLAT_MIN_RAW) {
-        bentTriggered = true;  // 复用变量，实际表示"伸直到位"
-    } else if (!bentTriggered && angle <= (FLEX_ANGLE_THRESHOLD - FLEX_HYSTERESIS)) {
-        bentTriggered = true;
-    } else if (bentTriggered && angle >= (FLEX_ANGLE_THRESHOLD + FLEX_HYSTERESIS)) {
-        bentTriggered = false;
+        if (measuredState == detailedState) {
+            candidateState = detailedState;
+            candidateCount = 0;
+        } else if (measuredState != candidateState) {
+            candidateState = measuredState;
+            candidateCount = 1;
+        } else {
+            candidateCount++;
+            if (candidateCount >= FLEX_STABLE_SAMPLES) {
+                detailedState = candidateState;
+                bentTriggered = detailedState == FLEX_DETAILED_BENT;
+                candidateCount = 0;
+            }
+        }
     }
 
+    if (now - lastPrintTime < FLEX_PRINT_INTERVAL) {
+        return;
+    }
+    lastPrintTime = now;
+
     Serial.print("[FLEX] Raw: ");
-    Serial.print(raw);
+    Serial.print(currentRaw);
     Serial.print("  Angle: ");
-    Serial.print(angle, 1);
+    Serial.print(currentAngle, 1);
     Serial.print("  State: ");
     Serial.print(getStateName());
-    if (bentTriggered) Serial.print(" >>FLAT");
+    if (bentTriggered) Serial.print(" >>BENT");
     Serial.println();
 }
 
 int SensorFlex::getRaw() const {
+    if (isCalibrated() && isCalibrationValid()) {
+        return currentRaw;
+    }
     return const_cast<SensorFlex*>(this)->readStableRaw();
 }
 
 float SensorFlex::getAngle() const {
+    if (isCalibrated() && isCalibrationValid()) {
+        return currentAngle;
+    }
     int raw = const_cast<SensorFlex*>(this)->readStableRaw();
     return getAngle(raw, flatValue, bentValue);
 }
 
 float SensorFlex::getNormalized() const {
+    if (isCalibrated() && isCalibrationValid()) {
+        return getNormalized(currentRaw, flatValue, bentValue);
+    }
     int raw = const_cast<SensorFlex*>(this)->readStableRaw();
     return getNormalized(raw, flatValue, bentValue);
 }
@@ -91,13 +128,7 @@ float SensorFlex::getNormalized() const {
 FlexState SensorFlex::getState() const {
     if (!isCalibrated()) return FLEX_MIDDLE;
 
-    // bentTriggered 在这里是"伸直到位"
-    if (bentTriggered) return FLEX_FLAT;
-
-    int raw = const_cast<SensorFlex*>(this)->readStableRaw();
-    float angle = getAngle(raw, flatValue, bentValue);
-    if (angle >= 160.0) return FLEX_BENT;
-    return FLEX_MIDDLE;
+    return detailedState == FLEX_DETAILED_BENT ? FLEX_BENT : FLEX_FLAT;
 }
 
 bool SensorFlex::isCalibrated() const {
@@ -148,24 +179,12 @@ void SensorFlex::test() const {
 }
 
 const char* SensorFlex::getStateName() const {
-    if (bentTriggered) return "伸直到位";
-    int raw = const_cast<SensorFlex*>(this)->readStableRaw();
-    float angle = getAngle(raw, flatValue, bentValue);
-    if (angle >= 160.0) return "弯曲";
-    return "中间";
+    return detailedState == FLEX_DETAILED_BENT ? "弯曲" : "伸直";
 }
 
 FlexDetailedState SensorFlex::getDetailedState() {
-    if (!isCalibrated()) return FLEX_DETAILED_BENT;
-
-    int raw = readStableRaw();
-
-    // 两种状态：raw > flatValue 为伸直，其余为弯曲（传感器特性：弯曲时ADC值变小）
-    if (raw > flatValue) {
-        return FLEX_DETAILED_FLAT;
-    }
-
-    return FLEX_DETAILED_BENT;
+    if (!isCalibrated() || !isCalibrationValid()) return FLEX_DETAILED_FLAT;
+    return detailedState;
 }
 
 // ========== 私有方法 ==========
