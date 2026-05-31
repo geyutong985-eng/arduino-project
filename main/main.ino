@@ -78,19 +78,26 @@ static bool forearmInflateTriggered = false;
 static bool lastPressurePressed = false;
 
 // ===== 震动联动变量 =====
-// 记录上一个IMU状态，用于检测状态变化
-static Posture lastPostureState = POSTURE_UNKNOWN;
+enum FeedbackStage {
+    FEEDBACK_WAIT_START,
+    FEEDBACK_WAIT_PICKING,
+    FEEDBACK_WAIT_PRESSURE
+};
 
-// D10震动：检测到Half Raised变化后3秒未到Picking触发
-static unsigned long halfRaisedTime = 0;
-static bool halfRaisedTriggered = false;
+static FeedbackStage feedbackStage = FEEDBACK_WAIT_START;
+static unsigned long feedbackStageStartTime = 0;
+static unsigned long pressureStageHalfRaisedStartTime = 0;
+static bool resetFeedbackActive = false;
+static bool resetFeedbackWaitPressureRelease = false;
+static uint8_t resetFeedbackStep = 0;
+static unsigned long resetFeedbackStepStartTime = 0;
 
-// D6震动：检测到Picking变化后2秒未按压触发
-static unsigned long pickingTime = 0;
-static bool pickingTriggered = false;
-
-// 通用
-static bool lastPressureState = false;
+const unsigned long PICKING_REMINDER_MS = 3000;
+const unsigned long PRESSURE_REMINDER_MS = 2000;
+const unsigned long STAGE_RESET_TIMEOUT_MS = 8000;
+const unsigned long PRESSURE_STAGE_BACKTRACK_RESET_MS = 3000;
+const unsigned long RESET_FEEDBACK_ON_MS = 2000;
+const unsigned long RESET_FEEDBACK_OFF_MS = 1000;
 
 // TF卡已移除，保留空函数兼容现有事件调用
 void logTFEvent(const __FlashStringHelper *eventText) {}
@@ -533,80 +540,150 @@ void controlForearmPneumatic() {
     lastPressurePressed = pressurePressed;
 }
 
-// ============================================================
+void startResetFeedback(bool waitPressureRelease = false) {
+    feedbackStage = FEEDBACK_WAIT_START;
+    feedbackStageStartTime = 0;
+    pressureStageHalfRaisedStartTime = 0;
+    resetFeedbackActive = true;
+    resetFeedbackWaitPressureRelease = waitPressureRelease;
+    resetFeedbackStep = 0;
+    resetFeedbackStepStartTime = millis();
+    vibration.stop();
+    vibration2.stop();
+    vibration.start();
+    vibration2.start();
+}
+
+void updateResetFeedback() {
+    if (!resetFeedbackActive) {
+        return;
+    }
+
+    unsigned long now = millis();
+    vibration.update();
+    vibration2.update();
+
+    if (resetFeedbackStep == 0 && now - resetFeedbackStepStartTime >= RESET_FEEDBACK_ON_MS) {
+        vibration.stop();
+        vibration2.stop();
+        resetFeedbackStep = 1;
+        resetFeedbackStepStartTime = now;
+        return;
+    }
+
+    if (resetFeedbackStep == 1 && now - resetFeedbackStepStartTime >= RESET_FEEDBACK_OFF_MS) {
+        vibration.start();
+        vibration2.start();
+        resetFeedbackStep = 2;
+        resetFeedbackStepStartTime = now;
+        return;
+    }
+
+    if (resetFeedbackStep == 2 && now - resetFeedbackStepStartTime >= RESET_FEEDBACK_ON_MS) {
+        vibration.stop();
+        vibration2.stop();
+        resetFeedbackActive = false;
+        resetFeedbackStep = 0;
+        resetFeedbackStepStartTime = 0;
+    }
+}
+
 // ============================================================
 // 联动层：controlVibration()
-// D10震动：Half Raised后3秒未到Picking → 脉冲震动（1开2停循环）
-// D6震动：Picking后2秒未按压 → 脉冲震动（1开2停循环）
+// GPIO2：等 Picking 超过 3 秒 → 单路脉冲提醒（1开2停循环）
+// GPIO15：等按压超过 2 秒 → 单路脉冲提醒（1开2停循环）
+// 双路同时震动：流程重置提示（2秒开、1秒停、2秒开）
 // ============================================================
 void controlVibration() {
     if (!enableVibration) {
+        resetFeedbackActive = false;
+        vibration.stop();
+        vibration2.stop();
         return;
     }
 
-    ArmState imuState = getControlArmState();
-    bool pressurePressed = pressure.isPressed();
+    if (resetFeedbackActive) {
+        updateResetFeedback();
+        return;
+    }
 
+    ArmState motionState = getControlArmState();
+    bool pressurePressed = pressure.isPressed();
     unsigned long now = millis();
 
-    // IMU状态未就绪时强制停止所有震动
-    if (imuState == ARM_STATE_UNKNOWN) {
-        vibration.stop();
-        vibration2.stop();
-        lastPostureState = imuState;
+    if (resetFeedbackWaitPressureRelease) {
+        if (!pressurePressed) {
+            resetFeedbackWaitPressureRelease = false;
+        } else {
+            vibration.stop();
+            vibration2.stop();
+            return;
+        }
+    }
+
+    if (pressurePressed && feedbackStage != FEEDBACK_WAIT_PRESSURE) {
+        startResetFeedback(true);
         return;
     }
 
-    // ----- 检测IMU状态变化 -----
-    bool postureChanged = (imuState != lastPostureState);
-    lastPostureState = imuState;
-
-    // ----- D10震动：HALF_RAISED进入时开始计时 -----
-    if (postureChanged && imuState == ARM_STATE_HALF_RAISED) {
-        halfRaisedTime = now;
-        halfRaisedTriggered = true;
-    }
-    // 状态离开HALF_RAISED：停止计时
-    else if (postureChanged && imuState != ARM_STATE_HALF_RAISED) {
-        halfRaisedTriggered = false;
-    }
-
-    // 压力按下：停止D10震动
-    if (pressurePressed && vibration2.isPulseMode()) {
-        vibration2.stop();
-    }
-
-    // 触发D10震动：HALF_RAISED状态持续3秒仍未到Picking
-    if (halfRaisedTriggered && imuState == ARM_STATE_HALF_RAISED && !pressurePressed) {
-        if (now - halfRaisedTime >= 3000 && !vibration2.isPulseMode()) {
-            vibration2.startPulse();
+    if (feedbackStage == FEEDBACK_WAIT_START) {
+        if (motionState == ARM_STATE_HALF_RAISED) {
+            feedbackStage = FEEDBACK_WAIT_PICKING;
+            feedbackStageStartTime = now;
+            pressureStageHalfRaisedStartTime = 0;
+        } else if (motionState == ARM_STATE_PICKING) {
+            feedbackStage = FEEDBACK_WAIT_PRESSURE;
+            feedbackStageStartTime = now;
+            pressureStageHalfRaisedStartTime = 0;
         }
     }
-    // 到了Picking：停止D10震动
-    if (imuState == ARM_STATE_PICKING && vibration2.isPulseMode()) {
-        vibration2.stop();
+
+    if (feedbackStage == FEEDBACK_WAIT_PICKING) {
+        if (motionState == ARM_STATE_PICKING) {
+            vibration.stop();
+            feedbackStage = FEEDBACK_WAIT_PRESSURE;
+            feedbackStageStartTime = now;
+            pressureStageHalfRaisedStartTime = 0;
+        } else {
+            unsigned long elapsed = now - feedbackStageStartTime;
+            if (elapsed >= STAGE_RESET_TIMEOUT_MS) {
+                startResetFeedback();
+                return;
+            }
+            if (elapsed >= PICKING_REMINDER_MS && !vibration.isPulseMode()) {
+                vibration.startPulse();
+            }
+        }
     }
 
-    // ----- D6震动：PICKING进入时开始计时 -----
-    if (postureChanged && imuState == ARM_STATE_PICKING) {
-        pickingTime = now;
-        pickingTriggered = true;
-    }
-    // 状态离开PICKING：停止计时
-    else if (postureChanged && imuState != ARM_STATE_PICKING) {
-        pickingTriggered = false;
-    }
+    if (feedbackStage == FEEDBACK_WAIT_PRESSURE) {
+        if (pressurePressed) {
+            vibration.stop();
+            vibration2.stop();
+            feedbackStage = FEEDBACK_WAIT_START;
+            feedbackStageStartTime = 0;
+            pressureStageHalfRaisedStartTime = 0;
+        } else {
+            if (motionState == ARM_STATE_HALF_RAISED) {
+                if (pressureStageHalfRaisedStartTime == 0) {
+                    pressureStageHalfRaisedStartTime = now;
+                }
+                if (now - pressureStageHalfRaisedStartTime >= PRESSURE_STAGE_BACKTRACK_RESET_MS) {
+                    startResetFeedback();
+                    return;
+                }
+            } else {
+                pressureStageHalfRaisedStartTime = 0;
+            }
 
-    // 压力按下：停止D6震动并重置
-    if (pressurePressed) {
-        vibration.stop();
-        pickingTriggered = false;
-    }
-
-    // 触发D6震动：PICKING状态持续2秒仍未按压
-    if (pickingTriggered && imuState == ARM_STATE_PICKING) {
-        if (now - pickingTime >= 2000 && !vibration.isPulseMode()) {
-            vibration.startPulse();
+            unsigned long elapsed = now - feedbackStageStartTime;
+            if (elapsed >= STAGE_RESET_TIMEOUT_MS) {
+                startResetFeedback();
+                return;
+            }
+            if (elapsed >= PRESSURE_REMINDER_MS && !vibration2.isPulseMode()) {
+                vibration2.startPulse();
+            }
         }
     }
 
@@ -691,5 +768,4 @@ void loop() {
     controlPalmPneumatic();       // 联动层：手掌气动
     controlForearmPneumatic();    // 联动层：小臂气动
     controlVibration();          // 联动层：震动控制
-    vibration2.update();        // 震动计时控制
 }
